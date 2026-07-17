@@ -4,7 +4,7 @@
 > `flatcar/jenkins-os`, `flatcar/flatcar-build-scripts`, live GitHub issue/PR queries, the
 > real `security.gentoo.org` RSS feed, and a Slack conversation with **Dongsu Park**
 > (2026-07-17). Every fact below was verified against source (file paths and commands are
-> cited in §7); nothing here is speculative.
+> cited in §8); nothing here is speculative.
 >
 > **Scope note:** this document describes **what exists today**. It is deliberately *not*
 > a proposal — the target VEX design is a separate follow-up document.

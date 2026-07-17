@@ -63,8 +63,8 @@ every case.
 | 5 | **Rolling-forward model**: bootstrap once from each channel's current head, then carry state forward release-to-release (diff against the immediately preceding version) | Avoids needing full history; naturally self-correcting as new data arrives. |
 | 6 | **Language: Go** | OpenVEX's reference implementation (`go-vex`, `vexctl`) is Go, maintained by the spec authors under the official `openvex` GitHub org. Python's only option (`vexipy`) is an unofficial, single-maintainer reimplementation outside that org. Using `go-vex` gives spec-correctness, validation, and merge support for free. |
 | 7 | **Architecture: CLI tool + thin GitHub Actions orchestration**, not logic embedded in workflow YAML | Matches existing Flatcar convention (`show-fixed-kernel-cves.py`, `sync_with_gentoo.sh` are real scripts called from workflows). Keeps matching/diffing/VEX-generation logic unit-testable, locally runnable, and versionable independent of any CI trigger. |
-| 8 | **Project scaffold: adapt the [`hello-go`](https://github.com/John15321/hello-go) template** | Modern Go 1.24+ tool-dependency pattern, cobra CLI, clean `cmd/`+`internal/` layout, working lint/test/release CI already wired up — solid base to extend rather than build from scratch. |
-| 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. [`hello-go`](https://github.com/John15321/hello-go)'s own MIT license needs to be dropped when adapting the template — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
+| 8 | **Project scaffold: adapt an existing internal Go CLI template** | Modern Go 1.24+ tool-dependency pattern, cobra CLI, clean `cmd/`+`internal/` layout, working lint/test/release CI already wired up — solid base to extend rather than build from scratch. |
+| 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. The source template's own MIT license needs to be dropped when adapting it — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
 
 ---
 
@@ -129,7 +129,7 @@ flowchart TD
 
     subgraph CI["🤖 GitHub Actions (orchestration only)"]
         WF1["update.yml<br/>checkout → run CLI → commit/PR result"]
-        WF2["lint.yml / tests.yml<br/>(from hello-go template)"]
+        WF2["lint.yml / tests.yml<br/>(from scaffold template)"]
         WF3["release.yml<br/>goreleaser on tag push"]
     end
 
@@ -190,20 +190,20 @@ initial `affected` set to roll forward from. No history before that point is tou
 
 ## 6. Tech Stack & Repo Layout
 
-> Scaffold reference: [`John15321/hello-go`](https://github.com/John15321/hello-go)
+> Scaffold reference: an internal Go CLI template (cobra + Go 1.24+ tool directives + lint/test/release CI)
 
 | Concern | Choice | Source |
 |---|---|---|
 | Language | Go | Decision Log #6 |
-| CLI framework | [`spf13/cobra`](https://github.com/spf13/cobra) | via [`hello-go`](https://github.com/John15321/hello-go) template |
+| CLI framework | [`spf13/cobra`](https://github.com/spf13/cobra) | via the scaffold template |
 | VEX generation | [`github.com/openvex/go-vex`](https://github.com/openvex/go-vex) | official OpenVEX reference implementation |
-| Lint | `golangci-lint` (errcheck, govet, staticcheck, unused, misspell, revive, gocritic) | [`hello-go`](https://github.com/John15321/hello-go) `.golangci.yml` |
-| Test runner | `gotestsum` (race + coverage) | [`hello-go`](https://github.com/John15321/hello-go) Makefile |
-| Release | `goreleaser` (cross-compiled linux/darwin/windows × amd64/arm64, triggered on tag push) | [`hello-go`](https://github.com/John15321/hello-go) `.goreleaser.yaml` |
-| Dev tooling | Go 1.24+ `tool` directives in `go.mod` — no global installs | [`hello-go`](https://github.com/John15321/hello-go) template |
-| CI orchestration | Thin GitHub Actions (`lint.yml`, `tests.yml`, `release.yml` reused as-is; new `update.yml` for the actual VEX pipeline) | [`hello-go`](https://github.com/John15321/hello-go) + this plan |
+| Lint | `golangci-lint` (errcheck, govet, staticcheck, unused, misspell, revive, gocritic) | scaffold template `.golangci.yml` |
+| Test runner | `gotestsum` (race + coverage) | scaffold template Makefile |
+| Release | `goreleaser` (cross-compiled linux/darwin/windows × amd64/arm64, triggered on tag push) | scaffold template `.goreleaser.yaml` |
+| Dev tooling | Go 1.24+ `tool` directives in `go.mod` — no global installs | scaffold template |
+| CI orchestration | Thin GitHub Actions (`lint.yml`, `tests.yml`, `release.yml` reused as-is; new `update.yml` for the actual VEX pipeline) | scaffold template + this plan |
 
-**Planned repo layout** (adapted from [`hello-go`](https://github.com/John15321/hello-go)):
+**Planned repo layout** (adapted from the scaffold template):
 
 ```
 vex-automation/
@@ -218,8 +218,8 @@ vex-automation/
 │   ├── current-state.md             (existing)
 │   └── plan.md                      (this file)
 └── .github/workflows/
-    ├── lint.yml / tests.yml         (from hello-go, reused)
-    ├── release.yml                  (from hello-go, reused)
+    ├── lint.yml / tests.yml         (from scaffold template, reused)
+    ├── release.yml                  (from scaffold template, reused)
     └── update.yml                   (new — the actual VEX-generation trigger)
 ```
 
