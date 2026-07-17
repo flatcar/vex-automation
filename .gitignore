@@ -1,0 +1,16 @@
+# Binaries
+/bin/
+/dist/
+
+# Test / coverage artifacts
+*.out
+coverage.txt
+coverage.html
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Go build cache locally (rare)
+/vendor/

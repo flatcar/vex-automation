@@ -15,6 +15,6 @@ Any guidelines specific to this repository that are not covered in the main cont
 <!-- Add repo-specific guidelines below this line -->
 
 This project is written in Go. See [`docs/plan.md`](./docs/plan.md) for the architecture,
-tech stack, and phased roadmap before proposing changes. A Go module scaffold is being
-adapted into this repository; until it lands at the repo root, treat `docs/plan.md` as the
-source of truth for intended project layout and tooling.
+tech stack, and phased roadmap before proposing changes. Run `make check` before opening a
+pull request — it runs the same format/lint/vet/test checks as CI. Run `make help` to see
+all available targets.
