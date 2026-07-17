@@ -13,3 +13,8 @@ If you want to file an issue for any Flatcar repository, please use the [central
 Any guidelines specific to this repository that are not covered in the main contribution guide will be listed here.
 
 <!-- Add repo-specific guidelines below this line -->
+
+This project is written in Go. See [`docs/plan.md`](./docs/plan.md) for the architecture,
+tech stack, and phased roadmap before proposing changes. A Go module scaffold is being
+adapted into this repository; until it lands at the repo root, treat `docs/plan.md` as the
+source of truth for intended project layout and tooling.

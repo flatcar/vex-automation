@@ -9,3 +9,6 @@ For details on the Flatcar project governance model, decision-making process, an
 Any governance details specific to this repository will be listed here.
 
 <!-- Add repo-specific governance notes below this line -->
+
+No repository-specific governance exceptions apply at this time — standard Flatcar
+project governance (linked above) governs decision-making for this repository.

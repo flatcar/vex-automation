@@ -15,11 +15,20 @@
 
 
 
-# \<project-name>
+# vex-automation
 
 ### A Flatcar Container Linux project
 
 Flatcar Container Linux is a fully open source, minimal-footprint, secure by default and always up-to-date Linux distribution for running containers at scale.
+
+This repository automates generation of machine-readable **[OpenVEX](https://github.com/openvex/spec)**
+(Vulnerability Exploitability eXchange) documents for Flatcar releases — starting from a
+proof-of-concept that derives VEX statements purely from data Flatcar already publishes
+(release SBOMs + the Gentoo GLSA corpus), with no speculative "affected" claims.
+
+See [`docs/current-state.md`](./docs/current-state.md) for how Flatcar's existing
+CVE/GLSA handling works today, and [`docs/plan.md`](./docs/plan.md) for the phased design
+of this automation (Phase 1 PoC scope, architecture, and future-phase candidates).
 
 This repository is maintained by the Flatcar community and contributors. Development and design decisions are guided by the principles of transparency, modularity, and collaboration.
 
