@@ -50,6 +50,19 @@ make check           # format-check + lint + vet + test (same checks CI runs, sp
 
 Run `make help` for the full list of available targets.
 
+### Generating a VEX document
+
+`generate` is the current PoC command: it takes a local SBOM file and a local directory of
+GLSA XML advisories, and writes an OpenVEX document.
+
+```console
+./bin/flatcar-vex generate \
+  --sbom flatcar_production_image_sbom.json \
+  --glsa-dir ./glsa \
+  --arch amd64 \
+  -o flatcar.vex.json
+```
+
 Please find information on:
 
 - [Contribution Guide](https://github.com/flatcar/Flatcar/blob/main/CONTRIBUTING.md) – how to get involved and submit patches.

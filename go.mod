@@ -2,7 +2,10 @@ module github.com/flatcar/vex-automation
 
 go 1.26.4
 
-require github.com/spf13/cobra v1.10.2
+require (
+	github.com/openvex/go-vex v0.2.8
+	github.com/spf13/cobra v1.10.2
+)
 
 require (
 	4d63.com/gocheckcompilerdirectives v1.3.0 // indirect
@@ -361,6 +364,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
+	github.com/package-url/packageurl-go v0.1.5 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
 	github.com/pelletier/go-toml/v2 v2.3.1 // indirect
