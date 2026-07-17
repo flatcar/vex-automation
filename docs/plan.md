@@ -9,8 +9,11 @@
 > open tensions so they aren't lost.
 
 **Status:** Phase 1 (PoC) design agreed; Go module scaffold (`flatcar-vex` CLI, cobra root
-command, lint/test/release tooling) is in place, VEX-generation logic not yet implemented.
-Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2"
+command, lint/test/release tooling) is in place. The core matching pipeline is implemented:
+`flatcar-vex generate --sbom <file> --glsa-dir <dir>` reads a local SPDX SBOM and a local
+GLSA XML directory, matches ebuild packages against advisories, and writes an OpenVEX
+document (`affected`/`fixed` statuses only — no fetching, caching, or rolling-forward logic
+yet). Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2"
 as a single next step.
 
 **Contents:**
