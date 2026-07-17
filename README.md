@@ -32,6 +32,24 @@ of this automation (Phase 1 PoC scope, architecture, and future-phase candidates
 
 This repository is maintained by the Flatcar community and contributors. Development and design decisions are guided by the principles of transparency, modularity, and collaboration.
 
+---
+
+## Getting Started
+
+This project is written in Go (see `go.mod` for the required version) and builds the
+`flatcar-vex` CLI.
+
+```console
+make build          # builds ./bin/flatcar-vex
+./bin/flatcar-vex --help
+
+make test            # run tests
+make lint            # run linters
+make check           # format-check + lint + vet + test (same checks CI runs, split across lint.yml/tests.yml)
+```
+
+Run `make help` for the full list of available targets.
+
 Please find information on:
 
 - [Contribution Guide](https://github.com/flatcar/Flatcar/blob/main/CONTRIBUTING.md) – how to get involved and submit patches.
