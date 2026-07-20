@@ -2,7 +2,7 @@
 
 > **Compiled from:** direct inspection of `flatcar/scripts`, `flatcar/Flatcar`,
 > `flatcar/jenkins-os`, `flatcar/flatcar-build-scripts`, live GitHub issue/PR queries, the
-> real `security.gentoo.org` RSS feed, and a Slack conversation with **Dongsu Park**
+> real `security.gentoo.org` RSS feed, and a conversation with **Dongsu Park**
 > (2026-07-17). Every fact below was verified against source (file paths and commands are
 > cited in §8); nothing here is speculative.
 >
