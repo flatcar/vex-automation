@@ -29,6 +29,7 @@ See docs/plan.md in this repository for the full design and current status.`,
 	}
 
 	cmd.AddCommand(newGenerateCmd())
+	cmd.AddCommand(newSyncGLSACmd())
 
 	return cmd
 }

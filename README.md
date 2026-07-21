@@ -50,17 +50,85 @@ make check           # format-check + lint + vet + test (same checks CI runs, sp
 
 Run `make help` for the full list of available targets.
 
-### Generating a VEX document
+### Tutorial: syncing GLSAs and generating a VEX document
 
-`generate` is the current PoC command: it takes a local SBOM file and a local directory of
-GLSA XML advisories, and writes an OpenVEX document.
+`flatcar-vex` has two subcommands that together form the full workflow: `sync-glsa`
+downloads/updates the input advisory data, and `generate` turns that data plus an SBOM
+into an OpenVEX document.
+
+#### 1. Get an SBOM
+
+Every Flatcar release publishes an SPDX SBOM alongside its images. Download the one for
+the release you want a VEX document for, e.g. the current stable release:
+
+```console
+curl -LO https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_image_sbom.json
+```
+
+#### 2. Sync the GLSA corpus
+
+`sync-glsa` clones Gentoo's GLSA advisory corpus into a local directory. Run it once to
+fetch everything, and run it again any time later to fast-forward to the latest advisories
+in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step):
+
+```console
+./bin/flatcar-vex sync-glsa --dest ./glsa-data
+```
+
+```
+Cloned GLSA mirror at ./glsa-data (3817 advisories)
+```
+
+Running the same command again later updates the existing mirror instead of re-cloning:
+
+```console
+./bin/flatcar-vex sync-glsa --dest ./glsa-data
+```
+
+```
+Updated GLSA mirror at ./glsa-data (3820 advisories)
+```
+
+Useful flags:
+
+- `--dest` – where to put (or update) the local mirror. Defaults to `glsa-data`.
+- `--repo` – sync from a different Git remote instead of Gentoo's canonical
+  `anongit.gentoo.org/git/data/glsa.git`. Re-running with a different `--repo` against an
+  existing `--dest` re-points it at the new remote.
+- `--timeout` – cap how long the clone/update is allowed to run before giving up (default `5m`).
+
+#### 3. Generate the VEX document
+
+Feed the SBOM and the synced GLSA directory into `generate`:
 
 ```console
 ./bin/flatcar-vex generate \
   --sbom flatcar_production_image_sbom.json \
-  --glsa-dir ./glsa \
+  --glsa-dir ./glsa-data \
   --arch amd64 \
   -o flatcar.vex.json
+```
+
+This matches every `ebuild`-type package in the SBOM against every GLSA advisory (using
+real Portage version-range comparison, not naive semver) and writes an
+[OpenVEX](https://github.com/openvex/spec) document to `flatcar.vex.json`. Omit `-o` to
+print the document to stdout instead.
+
+Useful flags:
+
+- `--arch` – architecture to filter GLSA `<package arch="...">` entries against (default `amd64`).
+- `--product-id` – override the VEX document's product identifier (default: derived from
+  the SBOM's own document name).
+- `--author` – set the VEX document's author field.
+
+#### Putting it together
+
+A one-liner that keeps the GLSA mirror fresh and regenerates the VEX document, suitable
+for a scheduled job:
+
+```console
+./bin/flatcar-vex sync-glsa --dest ./glsa-data && \
+./bin/flatcar-vex generate --sbom flatcar_production_image_sbom.json --glsa-dir ./glsa-data -o flatcar.vex.json
 ```
 
 Please find information on:
