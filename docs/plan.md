@@ -8,13 +8,7 @@
 > Phase 3, ...); it isn't scoped or sequenced yet, just a holding area for candidates and
 > open tensions so they aren't lost.
 
-**Status:** Phase 1 (PoC) design agreed; Go module scaffold (`flatcar-vex` CLI, cobra root
-command, lint/test/release tooling) is in place. The core matching pipeline is implemented:
-`flatcar-vex generate --sbom <file> --glsa-dir <dir>` reads a local SPDX SBOM and a local
-GLSA XML directory, matches ebuild packages against advisories, and writes an OpenVEX
-document (`affected`/`fixed` statuses only — no fetching, caching, or rolling-forward logic
-yet). Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2"
-as a single next step.
+**Status:** Phase 1 (PoC) design agreed, implementation not yet started. Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2" as a single next step.
 
 **Contents:**
 
@@ -27,7 +21,8 @@ as a single next step.
 
 **Future Phases (not committed, not sequenced):** [7. Future Phase Candidates](#7-future-phase-candidates-not-committed-not-sequenced) ·
 [8. Human-Override Loop](#8-human-override-loop-detail) ·
-[9. Open Questions](#9-open-questions)
+[9. Open Questions](#9-open-questions) ·
+[10. Prior Art / Feature-Creep Check](#10-prior-art--feature-creep-check)
 
 ---
 
@@ -55,6 +50,9 @@ every case.
   matching only for the PoC (see Future Phases candidate #1, OSV.dev).
 - No decision yet on public hosting/publishing location for the resulting VEX files
   (see Open Questions #2).
+- No general-purpose binary/filesystem scanning or component-discovery of our own — this
+  project consumes Flatcar's already-published SBOM as its ground truth (see §10 for how
+  this differs from a scanner like `cve-bin-tool`).
 
 ---
 
@@ -69,8 +67,8 @@ every case.
 | 5 | **Rolling-forward model**: bootstrap once from each channel's current head, then carry state forward release-to-release (diff against the immediately preceding version) | Avoids needing full history; naturally self-correcting as new data arrives. |
 | 6 | **Language: Go** | OpenVEX's reference implementation (`go-vex`, `vexctl`) is Go, maintained by the spec authors under the official `openvex` GitHub org. Python's only option (`vexipy`) is an unofficial, single-maintainer reimplementation outside that org. Using `go-vex` gives spec-correctness, validation, and merge support for free. |
 | 7 | **Architecture: CLI tool + thin GitHub Actions orchestration**, not logic embedded in workflow YAML | Matches existing Flatcar convention (`show-fixed-kernel-cves.py`, `sync_with_gentoo.sh` are real scripts called from workflows). Keeps matching/diffing/VEX-generation logic unit-testable, locally runnable, and versionable independent of any CI trigger. |
-| 8 | **Project scaffold: adapt an existing internal Go CLI template** | Modern Go 1.24+ tool-dependency pattern, cobra CLI, clean `cmd/`+`internal/` layout, working lint/test/release CI already wired up — solid base to extend rather than build from scratch. |
-| 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. The source template's own MIT license needs to be dropped when adapting it — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
+| 8 | **Project scaffold: adapt the [`hello-go`](https://github.com/John15321/hello-go) template** | Modern Go 1.24+ tool-dependency pattern, cobra CLI, clean `cmd/`+`internal/` layout, working lint/test/release CI already wired up — solid base to extend rather than build from scratch. |
+| 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. [`hello-go`](https://github.com/John15321/hello-go)'s own MIT license needs to be dropped when adapting the template — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
 
 ---
 
@@ -120,7 +118,7 @@ flowchart TD
     end
 
     subgraph Repo["📦 vex-automation repo"]
-        subgraph CmdLayer["cmd/flatcar-vex/"]
+        subgraph CmdLayer["cmd/vex-automation/"]
             MAIN["main.go — entrypoint"]
         end
         subgraph InternalLayer["internal/"]
@@ -135,7 +133,7 @@ flowchart TD
 
     subgraph CI["🤖 GitHub Actions (orchestration only)"]
         WF1["update.yml<br/>checkout → run CLI → commit/PR result"]
-        WF2["lint.yml / tests.yml<br/>(from scaffold template)"]
+        WF2["lint.yml / tests.yml<br/>(from hello-go template)"]
         WF3["release.yml<br/>goreleaser on tag push"]
     end
 
@@ -165,7 +163,7 @@ flowchart TD
 sequenceDiagram
     autonumber
     participant Rel as New Flatcar release (any channel, incl. patch)
-    participant CLI as flatcar-vex CLI
+    participant CLI as vex-automation CLI
     participant SBOM as SBOM (this version)
     participant GLSA as GLSA corpus
     participant Prev as Previous version's VEX file
@@ -196,24 +194,24 @@ initial `affected` set to roll forward from. No history before that point is tou
 
 ## 6. Tech Stack & Repo Layout
 
-> Scaffold reference: an internal Go CLI template (cobra + Go 1.24+ tool directives + lint/test/release CI)
+> Scaffold reference: [`John15321/hello-go`](https://github.com/John15321/hello-go)
 
 | Concern | Choice | Source |
 |---|---|---|
 | Language | Go | Decision Log #6 |
-| CLI framework | [`spf13/cobra`](https://github.com/spf13/cobra) | via the scaffold template |
+| CLI framework | [`spf13/cobra`](https://github.com/spf13/cobra) | via [`hello-go`](https://github.com/John15321/hello-go) template |
 | VEX generation | [`github.com/openvex/go-vex`](https://github.com/openvex/go-vex) | official OpenVEX reference implementation |
-| Lint | `golangci-lint` (errcheck, govet, staticcheck, unused, misspell, revive, gocritic) | scaffold template `.golangci.yml` |
-| Test runner | `gotestsum` (race + coverage) | scaffold template Makefile |
-| Release | `goreleaser` (cross-compiled linux/darwin/windows × amd64/arm64, triggered on tag push) | scaffold template `.goreleaser.yaml` |
-| Dev tooling | Go 1.24+ `tool` directives in `go.mod` — no global installs | scaffold template |
-| CI orchestration | Thin GitHub Actions (`lint.yml`, `tests.yml`, `release.yml` reused as-is; new `update.yml` for the actual VEX pipeline) | scaffold template + this plan |
+| Lint | `golangci-lint` (errcheck, govet, staticcheck, unused, misspell, revive, gocritic) | [`hello-go`](https://github.com/John15321/hello-go) `.golangci.yml` |
+| Test runner | `gotestsum` (race + coverage) | [`hello-go`](https://github.com/John15321/hello-go) Makefile |
+| Release | `goreleaser` (cross-compiled linux/darwin/windows × amd64/arm64, triggered on tag push) | [`hello-go`](https://github.com/John15321/hello-go) `.goreleaser.yaml` |
+| Dev tooling | Go 1.24+ `tool` directives in `go.mod` — no global installs | [`hello-go`](https://github.com/John15321/hello-go) template |
+| CI orchestration | Thin GitHub Actions (`lint.yml`, `tests.yml`, `release.yml` reused as-is; new `update.yml` for the actual VEX pipeline) | [`hello-go`](https://github.com/John15321/hello-go) + this plan |
 
-**Planned repo layout** (adapted from the scaffold template):
+**Planned repo layout** (adapted from [`hello-go`](https://github.com/John15321/hello-go)):
 
 ```
 vex-automation/
-├── cmd/flatcar-vex/main.go          entrypoint
+├── cmd/vex-automation/main.go       entrypoint
 ├── internal/
 │   ├── cli/                         cobra subcommands (bootstrap, update, match, ...)
 │   ├── sbom/                        fetch + parse SPDX SBOM
@@ -224,8 +222,8 @@ vex-automation/
 │   ├── current-state.md             (existing)
 │   └── plan.md                      (this file)
 └── .github/workflows/
-    ├── lint.yml / tests.yml         (from scaffold template, reused)
-    ├── release.yml                  (from scaffold template, reused)
+    ├── lint.yml / tests.yml         (from hello-go, reused)
+    ├── release.yml                  (from hello-go, reused)
     └── update.yml                   (new — the actual VEX-generation trigger)
 ```
 
@@ -304,3 +302,118 @@ These are deliberately unresolved — flagged for a future decision, not blockin
 7. **VEX document immutability vs. retroactive correction** — see §8. Unresolved: whether
    published per-release VEX files should ever be rewritten after the fact, and if so, how
    consumers are meant to detect the change.
+8. **Multi-source CVE deduplication/precedence** — see §10's coverage diagram. When the same
+   CVE for the same package is reported by more than one source (e.g. Gentoo happens to GLSA
+   a Rust dependency that also has a GitLab Advisory Database entry, or a kernel CVE appears
+   both via the official feed and gets independently discussed on `oss-security`), the tool
+   must emit **one** canonical VEX statement per CVE+product, not one per source. Unresolved:
+   which source wins if their `status`/`justification` ever disagree (e.g. GLSA implies
+   `affected` but a human override from Path C says `not_affected`) — a source precedence
+   ordering needs to be defined, not left as "last write wins" by accident of processing order.
+
+---
+
+## 10. Prior Art / Feature-Creep Check
+
+> Two existing open source tools sit near this problem space. Both were checked directly
+> against their real docs/READMEs/repos (not assumed from memory) before writing this
+> section, specifically to avoid re-describing a solved problem.
+
+### OpenCVE (`opencve/opencve`)
+
+**What it actually is:** a CVE **monitoring and notification platform**. You subscribe to
+vendors/products, it cross-references MITRE/Vulnrichment/NVD/RedHat, and it notifies you
+(email/webhook/Slack) when a subscribed CVE appears or changes. It also gives each
+subscribed CVE a human-assignable status (`under analysis`, `risk accepted`, `to be
+verified`, ...) and lets you tag/organize/report on them.
+
+**Confirmed absence of overlap:** OpenCVE has **no SBOM ingestion and no VEX
+production/consumption of any kind** — this was verified directly against its own docs
+(`docs.opencve.io`) feature list, which covers explore/subscribe/organize/notify/tag/report
+only. (An earlier AI web-search summary in this project's research had speculated OpenCVE
+"generally" supports VEX — that claim is **not supported by OpenCVE's actual documentation**
+and should be disregarded.) OpenCVE answers "which CVEs affect the vendors/products I
+follow, and what's my team's triage status on them" — a fundamentally different question
+from "what is the machine-readable, per-release, exploitability statement for this exact
+Flatcar image." **No feature-creep risk here** — different problem, no functional overlap.
+
+### CVE Binary Tool (`ossf/cve-bin-tool`)
+
+**What it actually is:** a scanner that finds known-vulnerable components either by
+binary-scanning a filesystem (448 built-in checkers) or by **consuming an existing SBOM**
+(SPDX, CycloneDX, or SWID). It matches found components against multiple vulnerability
+databases — **NVD, RedHat, OSV.dev, GitLab Advisory Database, and the curl project's own
+vuln feed** — and can then:
+
+- **Generate a VEX** from the scan, in **CSAF, CycloneDX, or OpenVEX** format
+  (`--vex-type {csaf,cyclonedx,openvex} --vex-output <file>`)
+- **Consume a VEX file as a triage database** (`--vex-file <file>`) so a human's prior
+  `not_affected`/`affected`/accepted-risk decisions persist across future scans instead of
+  re-triaging the same CVE every run — explicitly designed to be shared "across different
+  runs of cve-bin-tool or with other tools that support CycloneDX VEX, OpenVEX and CSAF
+  format."
+
+**This is the real overlap to be honest about.** The generic shape — *SBOM → match against
+vuln sources → emit VEX → let a human edit/annotate it → feed that back in so future runs
+respect the human's call* — is structurally the same loop as this project's PoC (§3–§5) and
+the Future Phases Human-Override Loop (§8). cve-bin-tool already does this, is OSS,
+Python/GPL-3.0, has an official GitHub Action, and its OSV.dev data source already covers
+the exact non-`ebuild`/Go-ecosystem gap flagged as Future Phase candidate #1.
+
+**Why we are not just adopting it as-is, and where the real gap remains:**
+
+| Gap vs. cve-bin-tool | Why it matters for Flatcar specifically |
+|---|---|
+| No Gentoo GLSA awareness¹ | cve-bin-tool's sources are NVD/RedHat/OSV/GitLab/curl — none of these is GLSA. Flatcar's build-gate (`glsa-check`) and its ~3.8k-file GLSA mirror are the one detection mechanism Flatcar already trusts and blocks builds on (current-state.md §3); a generic tool with no GLSA input would silently miss that entire axis. |
+| No concept of a Flatcar release/channel identity | cve-bin-tool's VEX output describes whatever it scanned in that run; it has no built-in notion of "Alpha/Beta/Stable/LTS channel, this exact version, roll forward from the previous release's VEX" (§5, Rolling-Forward Mechanic) — that continuity logic is Flatcar-specific and would need to be built around it either way. |
+| No native tie-in to Flatcar's existing manual advisory process | The Human-Override Loop (§8) is designed to consume Flatcar's *existing* `advisory`-labeled GitHub issues (Path C) as the human-decision source of truth — cve-bin-tool's triage loop expects a human to hand-edit its own VEX/JSON file directly, not read from an external issue tracker. |
+| Distribution-image scope, not source/binary scan scope | cve-bin-tool's core detection is "scan this filesystem/binary/SBOM for known-vulnerable components." Flatcar's ground truth is narrower and stronger: the SBOM's `ebuild` purls already give an exact package+version tied to a signed, released artifact (current-state.md §6) — matching still needs to happen, but the input is authoritative already, not discovered by a generic scanner. |
+
+**Verdict:** cve-bin-tool is the closest prior art found, and is worth revisiting concretely
+in a future phase — either as a **library/data-source dependency** (e.g. calling into its
+OSV.dev-backed matching instead of hand-rolling that integration, per Future Phase
+candidate #1) or as a **reference implementation** for the human-triage-file pattern in §8.
+It is not, however, a drop-in replacement for the PoC: it has no GLSA input, no Flatcar
+release/channel model, and no tie-in to Flatcar's existing advisory-issue workflow — all
+three are Flatcar-specific integration work this project exists to do. Building a thin,
+Flatcar-aware layer is judged **not** feature creep; re-implementing a general-purpose
+binary/SBOM vulnerability scanner from scratch (checkers, multi-source dedup, etc.) *would*
+be — and is explicitly out of scope (see §1 Non-Goals).
+
+> ¹ Double-checked directly, not assumed: cve-bin-tool's `doc/MANUAL.md` data-source list is
+> exactly `{NVD, OSV, GAD, REDHAT, CURL}` (its `--disable-data-source` flag enumerates the
+> same 5). Its OSV.dev dependency doesn't cover the gap either — OSV.dev's own live
+> ecosystem list (`storage.googleapis.com/osv-vulnerabilities/ecosystems.txt`) has no
+> "Gentoo" entry, and Gentoo/GLSA integration into OSV.dev is an open, unresolved community
+> request as of this writing, not an existing feature.
+
+### Where the sources actually overlap
+
+![Illustrative Venn diagram of GLSA, cve-bin-tool, and oss-security mailing-list CVE coverage overlap](images/venn-coverage-illustrative.png)
+
+> **⚠️ Illustrative only — not proportional to real CVE counts.** The three-circle shape and
+> equal region sizes are for communicating the *categories* of overlap, not measured data.
+> Getting real proportions would require actually running GLSA-matching and OSV/GAD-matching
+> against Flatcar's SBOM and counting real intersections — a natural validation step once the
+> PoC's matcher exists, not something we can produce from docs alone today.
+
+The concrete case that motivates this diagram: **a single Rust dependency with a known CVE
+can legitimately be reported by more than one source at once** — e.g. Gentoo happens to
+write a GLSA for it *and* it already has a GitLab Advisory Database (`cargo`) entry that
+cve-bin-tool would also surface. Without deduplication, a naive "run every source and union
+the results" approach would emit **two separate VEX statements for the same CVE+product**,
+which is invalid/confusing for a consumer. This is now tracked explicitly as Open Question
+#8 (§9): sources must be deduplicated by canonical CVE ID per package, and a precedence
+order defined for when sources disagree on status.
+
+**A fourth wrinkle: Linux kernel CVEs aren't a clean fourth circle, they live inside
+oss-security's wedge.** Our D4 source (`lore.kernel.org/linux-cve-announce`, the kernel's
+own CNA announcement feed since 2024) is *not* independent of the oss-security mailing list:
+kernel security issues are frequently disclosed and discussed on oss-security first or in
+parallel, before/alongside the dedicated kernel feed. So rather than drawing a fourth
+overlapping circle (which `matplotlib-venn` can't render cleanly for 4+ sets anyway), the
+diagram calls this out as a note: kernel CVEs sit inside the oss-security-only wedge, and
+D4 should be treated as a narrower, more-structured subset of what oss-security already
+covers for the kernel, not a wholly separate population. This reinforces Open Question #8:
+the dedup/precedence logic needs to account for D3 (oss-security) and D4 (kernel feed)
+frequently reporting the *same* kernel CVE.

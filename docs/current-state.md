@@ -4,7 +4,7 @@
 > `flatcar/jenkins-os`, `flatcar/flatcar-build-scripts`, live GitHub issue/PR queries, the
 > real `security.gentoo.org` RSS feed, and a Slack conversation with **Dongsu Park**
 > (2026-07-17). Every fact below was verified against source (file paths and commands are
-> cited in §8); nothing here is speculative.
+> cited in §7); nothing here is speculative.
 >
 > **Scope note:** this document describes **what exists today**. It is deliberately *not*
 > a proposal — the target VEX design is a separate follow-up document.
@@ -153,6 +153,59 @@ sequenceDiagram
 **Source:** `build_library/test_image_content.sh` → `glsa_image()`, invoked from
 `build_image_util.sh` (`test_image_content()`).
 
+### What `glsa-check` actually is (provenance)
+
+`glsa-check` is **not Flatcar-authored tooling** — it ships as part of upstream
+**`sys-apps/portage`** itself (Gentoo's package manager; confirmed via `gentoo/portage`
+source: `bin/glsa-check` + `lib/portage/glsa.py`), which Flatcar vendors unmodified in
+`portage-stable` (`sys-apps/portage/portage-3.0.81.ebuild`) as a hard SDK dependency.
+`glsa-check-$BOARD` is not a distinct per-board tool — it's Portage's standard
+board-scoped binary naming convention (same as `emerge-$BOARD`), same underlying script.
+Per the official man page (`man/glsa-check.1`), Flatcar's `-t`/`--test` invocation is the
+"detect only" mode; `glsa-check` also supports `-f`/`--fix` (experimental auto-remediation)
+and `-i`/`--inject` (permanent per-GLSA ignore list) — Flatcar uses neither, implementing
+its own equivalent of `-i` via the hand-maintained `GLSA_ALLOWLIST` bash array instead.
+
+### The actual matching algorithm (`lib/portage/glsa.py`, traced directly from source)
+
+Each GLSA XML's `<affected><package>` block declares per-arch `<vulnerable>`/`<unaffected>`
+version nodes with a `range` attribute. A real example from Flatcar's vendored corpus
+(`200310-03`):
+
+```xml
+<affected>
+  <package name="www-servers/apache" auto="yes" arch="*">
+    <unaffected range="ge">1.3.29</unaffected>
+    <vulnerable range="lt">1.3.29</vulnerable>
+  </package>
+</affected>
+```
+
+1. `range` maps to a Portage atom operator via a fixed table: `le→<=, lt→<, eq→=, gt→>,
+   ge→>=`, plus revision-qualified `rge/rle/rgt/rlt → >=~/<=~/>~/<~` (Portage's
+   "same version, compare only the `-rN` revision suffix" tilde syntax).
+2. Each node becomes a real atom string (e.g. `<www-servers/apache-1.3.29`), optionally
+   slot-qualified.
+3. `isVulnerable()` walks each `<package>` block, filters by `arch` (`*` or a space-separated
+   list — the built image's arch must be in it), then matches each vulnerable atom against
+   the **installed vardb** (`vardbapi` — whatever's actually merged into `ROOT`), subtracting
+   anything that also matches an `<unaffected>` atom.
+4. **Availability of a fix does not gate the affected/not-affected verdict** — `getMinUpgrade()`
+   (which computes whether an upgrade path exists in the tree) returns an empty list, not
+   `None`, when the system is vulnerable but no fix is available yet; since `isVulnerable()`
+   only checks `is not None`, the verdict is purely a **version-range match against installed
+   package state**. The upgrade-path computation is used solely by `-p`/`--pretend`'s
+   remediation-guidance output, a separate code path.
+
+**Relevance to a future Go VEX matcher:** the core algorithm — atom-operator lookup +
+version-range containment + arch filter — has no live-system dependency beyond *which*
+database it matches against. For build-time gating that's the built image's vdb; for a
+retrospective per-release VEX generator it would instead be the SBOM's recorded
+package+version, playing the same role `vardbapi` plays here. The version-comparison
+semantics (including the `~`/revision-qualified operators) should be ported faithfully
+rather than reimplemented as naive semver, since Portage version comparison has real edge
+cases a semver-style comparator would get wrong.
+
 ---
 
 ## 4. Path B — Routine / Weekly Package Updates (Independent of GLSA)
@@ -180,7 +233,7 @@ flowchart LR
 ## 5. Path C — Manual Advisory Issue Tracking
 
 Confirmed directly by Dongsu: **"Those are all manually created"** — referring to the
-`advisory`-labeled issues in `flatcar/Flatcar` (**331 total, 46 currently open** as of this
+`advisory`-labeled issues in `flatcar/Flatcar` (**335 total, 50 currently open** as of this
 review — see §8).
 
 ```mermaid
@@ -261,6 +314,16 @@ flowchart TB
 > SDK-only or sysext-only). `G2` (the SBOM) is authoritative for that finer distinction and
 > is also the only source that ties an exact **version** to a **released** artifact.
 
+> **Confirmed absence of any tooling for non-`ebuild` packages:** the SBOM's `golang` purls
+> (~1070 of ~1400 total packages) and any Rust/crates.io packages have **no automated
+> vulnerability-detection mechanism of any kind** today — not GLSA (Gentoo doesn't write
+> GLSAs for most Go modules), and not a generic scanner either. Directly checked: no
+> `dependabot.yml`, and no `govulncheck`/`cargo-audit`/`trivy`/`grype`/`snyk` workflow exists
+> anywhere in `flatcar/Flatcar`, `flatcar/scripts`, or `flatcar/jenkins-os` (all `.github/workflows/*.y*ml`
+> files enumerated and searched directly). These packages only receive security fixes as a
+> side effect of Path B's routine freshness bumps, with zero CVE-awareness built into that
+> process — this is a genuine blind spot, not merely "less structured" than GLSA coverage.
+
 ---
 
 ## 7. Known Gaps in the Current State
@@ -273,12 +336,14 @@ flowchart TB
 | 4 | **CVE IDs re-typed by hand, twice** | Once into the GitHub issue, again into `changelog/security/*.md` — no automated link, no CI enforcement that the fragment is even added. |
 | 5 | **No VEX output anywhere** | Nothing here produces a machine-readable VEX document; the closest analogues are hand-written issue bodies and release-note CVE lists. |
 | 6 | **No queryable "shipped version X ↔ still-affected-by CVE Y" record** | That information lives only in prose (issue comments like *"Fixed in Beta 4722.1.0, Stable 4593.2.4, LTS 4081.3.9"*). |
+| 7 | **Zero automated CVE detection for non-`ebuild` (Go/Rust) packages** | ~1070 of ~1400 SBOM packages are golang purls with no GLSA and no other scanner (`dependabot`/`govulncheck`/`cargo-audit`/`trivy`/`grype`/`snyk` all confirmed absent repo-wide); these only get fixed as a side effect of routine freshness bumps (Path B), with no CVE-awareness at all. |
 
 ---
 
 ## 8. Verified Facts Reference
 
-Every quantitative claim above was checked against a primary source on 2026-07-17:
+Every quantitative claim above was checked against a primary source on 2026-07-17, with the
+advisory-issue count re-verified on 2026-07-21 (counts drift daily; the rest were unchanged):
 
 | Claim | Verified value | Source |
 |---|---|---|
@@ -288,7 +353,10 @@ Every quantitative claim above was checked against a primary source on 2026-07-1
 | Curated package list size | 776 entries | `scripts/.github/workflows/portage-stable-packages-list` |
 | Package tree size (ground truth) | 446 (`portage-stable`) + 153 (`coreos-overlay`) = **599** | GitHub API tree listing, `flatcar-archive/portage-stable` & `flatcar-archive/coreos-overlay` @ `main` |
 | Build gate function | `glsa_image()` → `glsa-check-$BOARD -t all` vs `GLSA_ALLOWLIST` | `scripts/build_library/test_image_content.sh` |
-| `advisory`-labeled issues | 331 total, 46 open | GitHub Search API, `repo:flatcar/Flatcar label:advisory` |
+| `advisory`-labeled issues | 335 total, 50 open | GitHub Search API, `repo:flatcar/Flatcar label:advisory` (re-checked 2026-07-21) |
 | "Automation" claim in docs | Present, contradicted by Dongsu | `Flatcar/SECURITY.md` line 28 |
 | GLSA RSS feed | Live and working | `https://security.gentoo.org/glsa/feed.rss` |
 | GLSA notification mailing list | `gentoo-announce` | Gentoo project documentation |
+| `glsa-check` provenance | Ships with `sys-apps/portage`, not `gentoolkit` or Flatcar-authored | `gentoo/portage` source (`bin/glsa-check`, `lib/portage/glsa.py`, `man/glsa-check.1`); corroborated by Gentoo Wiki's "GLSA" page ("glsa-check application (distributed with Portage)") |
+| `glsa-check` matching semantics | Version-range match against installed vdb only; fix-availability does not gate the affected verdict | `gentoo/portage` `lib/portage/glsa.py` (`isVulnerable()`, `getMinUpgrade()`), re-checked 2026-07-21 |
+| Non-`ebuild` (Go/Rust) vulnerability tooling | Confirmed absent — no `dependabot.yml`, no `govulncheck`/`cargo-audit`/`trivy`/`grype`/`snyk` workflow | Direct enumeration + search of all `.github/workflows/*.y*ml` in `flatcar/Flatcar`, `flatcar/scripts`, `flatcar/jenkins-os`, 2026-07-21 |
