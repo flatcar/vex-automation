@@ -8,9 +8,10 @@ var Version = "dev"
 
 // NewRootCmd builds the root cobra command for flatcar-vex.
 //
-// This is currently a scaffold: no VEX-generation logic has been implemented
-// yet. Subcommands (bootstrap, update, match, ...) will be added here as the
-// PoC described in docs/plan.md is built out.
+// The "generate" subcommand implements the basic PoC pipeline described in
+// docs/plan.md (SBOM + local GLSA directory -> OpenVEX document). Further
+// subcommands (e.g. fetching inputs automatically, rolling forward across
+// releases) will be added here as later phases are built out.
 func NewRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flatcar-vex",
@@ -27,7 +28,8 @@ See docs/plan.md in this repository for the full design and current status.`,
 		SilenceErrors: true,
 	}
 
-	// Subcommands are added here as they are implemented.
+	cmd.AddCommand(newGenerateCmd())
+	cmd.AddCommand(newSyncGLSACmd())
 
 	return cmd
 }

@@ -14,3 +14,7 @@ coverage.html
 
 # Go build cache locally (rare)
 /vendor/
+
+# Local scratch data for manually trying out the CLI (downloaded SBOMs, GLSA
+# corpus mirrors, generated VEX output) — never committed.
+/.local/
