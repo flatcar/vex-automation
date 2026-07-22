@@ -47,9 +47,12 @@ type Result struct {
 // fast-forwarding it in place otherwise. It is safe to call repeatedly (e.g.
 // from a cron job or CI step) to keep a local mirror fresh.
 //
-// dest must either not exist (it will be created) or already be a Git
-// checkout of the same repository; Sync refuses to touch a directory that
-// exists but isn't one, to avoid silently clobbering unrelated files.
+// dest is treated as needing a fresh clone whenever it doesn't already
+// contain a dest/.git directory; this covers both a dest that doesn't exist
+// yet and a dest that exists but is empty. If dest exists, is non-empty,
+// and isn't already a Git checkout, Sync does not silently clobber it: the
+// underlying "git clone" call itself refuses to run against a non-empty
+// directory, and that failure is surfaced to the caller.
 func Sync(ctx context.Context, dest, repoURL string) (Result, error) {
 	if strings.TrimSpace(dest) == "" {
 		return Result{}, fmt.Errorf("glsasync: dest must not be empty")
@@ -167,7 +170,7 @@ func runGit(ctx context.Context, dir string, args ...string) error {
 // but isn't worth descending into either).
 func countGLSAFiles(dir string) (int, error) {
 	n := 0
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

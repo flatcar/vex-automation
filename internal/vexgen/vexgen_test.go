@@ -1,6 +1,7 @@
 package vexgen
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,40 @@ func TestBuildDeduplicatesSubcomponents(t *testing.T) {
 	}
 	if got := len(doc.Statements[0].Products[0].Subcomponents); got != 1 {
 		t.Errorf("got %d subcomponents, want 1 (duplicate PURL should be deduplicated)", got)
+	}
+}
+
+// TestBuildActionStatementJoinsMultipleGLSAIDs ensures the ActionStatement
+// for a CVE flagged by more than one GLSA lists the IDs in a
+// human-readable, comma-separated form (e.g. "202604-01, 202604-02"),
+// not Go's default slice formatting (e.g. "[202604-01 202604-02]").
+func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
+	findings := []match.Finding{
+		{
+			CVE: "CVE-2026-1", GLSAID: "202604-02", Affected: true,
+			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
+		},
+		{
+			CVE: "CVE-2026-1", GLSAID: "202604-01", Affected: true,
+			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse2@1.0"},
+		},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 1 {
+		t.Fatalf("got %d statements, want 1", len(doc.Statements))
+	}
+
+	action := doc.Statements[0].ActionStatement
+	if strings.Contains(action, "[") || strings.Contains(action, "]") {
+		t.Errorf("ActionStatement %q should not contain Go slice-formatting brackets", action)
+	}
+	const want = "see Gentoo GLSA 202604-01, 202604-02"
+	if !strings.Contains(action, want) {
+		t.Errorf("ActionStatement = %q, want it to contain %q (sorted, comma-joined)", action, want)
 	}
 }
 

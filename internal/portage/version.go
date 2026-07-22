@@ -11,8 +11,8 @@
 //     because "010" < "02" as strings once trailing zeros are considered) —
 //     an edge case essentially never seen in practice for the packages
 //     Flatcar ships. This implementation instead compares them numerically
-//     (so "1.010" == "1.2"), which is correct for the overwhelming majority
-//     of real version strings.
+//     (so "1.010" == "1.10", since both parse to the integer 10), which is
+//     correct for the overwhelming majority of real version strings.
 //   - Only one "_suffix" component (e.g. "_alpha1", "_p20240101") is
 //     supported per version, which matches real-world usage; the PMS
 //     grammar technically allows a chain of several.

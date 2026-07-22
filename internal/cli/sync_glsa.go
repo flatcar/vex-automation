@@ -47,7 +47,9 @@ re-fetching or re-parsing individual files itself.`,
 			if res.Cloned {
 				action = "Cloned"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s GLSA mirror at %s (%d advisories)\n", action, res.Dest, res.FileCount)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s GLSA mirror at %s (%d advisories)\n", action, res.Dest, res.FileCount); err != nil {
+				return err
+			}
 			return nil
 		},
 	}

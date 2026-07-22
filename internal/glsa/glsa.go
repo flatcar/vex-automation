@@ -124,10 +124,20 @@ func LoadDir(dir string) ([]GLSA, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".xml") {
+		if d.IsDir() {
+			// A synced mirror (see internal/glsasync) contains a .git
+			// directory; nothing under it can ever be a real advisory, and
+			// descending into it is wasted work on a repo with real history.
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if !strings.Contains(d.Name(), "glsa") {
+		// Match the real corpus's naming convention exactly (e.g.
+		// "glsa-202604-03.xml"), not just "any .xml file whose name
+		// contains glsa somewhere", which could accidentally pick up
+		// unrelated files dropped into the directory.
+		if !strings.HasPrefix(d.Name(), "glsa-") || !strings.HasSuffix(d.Name(), ".xml") {
 			return nil
 		}
 		sawFiles = true

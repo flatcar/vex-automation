@@ -127,6 +127,50 @@ func TestLoadDirRecursesSubdirectories(t *testing.T) {
 	}
 }
 
+// TestLoadDirIgnoresNonMatchingFilenames ensures the "glsa-*.xml" filter is
+// exact, not just "*.xml with glsa somewhere in the name": unrelated or
+// oddly-named XML files sitting in the same directory (as could plausibly
+// happen in a hand-maintained or third-party directory) must not be parsed.
+func TestLoadDirIgnoresNonMatchingFilenames(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-03.xml", sampleGLSA)
+	writeFile(t, dir, "not-glsa.xml", "<not-a-glsa/>")
+	writeFile(t, dir, "myglsa.xml", "<not-a-glsa-either/>")
+	writeFile(t, dir, "glsa-202604-03.xml.bak", sampleGLSA)
+
+	glsas, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+	if len(glsas) != 1 {
+		t.Fatalf("got %d GLSAs, want 1 (only the correctly-named file)", len(glsas))
+	}
+}
+
+// TestLoadDirSkipsGitDirectory ensures a directory synced via
+// internal/glsasync (which contains a .git checkout alongside the *.xml
+// advisories) doesn't have LoadDir needlessly descend into .git's internals.
+func TestLoadDirSkipsGitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-03.xml", sampleGLSA)
+
+	gitDir := filepath.Join(dir, ".git", "objects", "pack")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A file that would (incorrectly) match the old "*.xml containing glsa"
+	// filter if .git were still walked into.
+	writeFile(t, gitDir, "glsa-fake.xml", "<not-a-real-glsa/>")
+
+	glsas, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+	if len(glsas) != 1 {
+		t.Fatalf("got %d GLSAs, want 1 (the .git directory should have been skipped)", len(glsas))
+	}
+}
+
 func TestMatchesArch(t *testing.T) {
 	cases := []struct {
 		arch string
