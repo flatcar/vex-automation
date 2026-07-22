@@ -5,6 +5,7 @@ package vexgen
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/openvex/go-vex/pkg/vex"
@@ -137,7 +138,7 @@ func actionStatement(findings []match.Finding) string {
 
 	msg := "Update the affected package(s) to a version that resolves this CVE"
 	if len(glsaIDs) > 0 {
-		msg += fmt.Sprintf(" (see Gentoo GLSA %v)", glsaIDs)
+		msg += fmt.Sprintf(" (see Gentoo GLSA %s)", strings.Join(glsaIDs, ", "))
 	}
 	return msg + "."
 }

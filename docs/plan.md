@@ -8,7 +8,7 @@
 > Phase 3, ...); it isn't scoped or sequenced yet, just a holding area for candidates and
 > open tensions so they aren't lost.
 
-**Status:** Phase 1 (PoC) design agreed, implementation not yet started. Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2" as a single next step.
+**Status:** Phase 1 (PoC) design agreed; `generate` and `sync-glsa` are implemented. Future Phases are discussion-only — not committed, not sequenced, not necessarily "Phase 2" as a single next step.
 
 **Contents:**
 
@@ -118,7 +118,7 @@ flowchart TD
     end
 
     subgraph Repo["📦 vex-automation repo"]
-        subgraph CmdLayer["cmd/vex-automation/"]
+        subgraph CmdLayer["cmd/flatcar-vex/"]
             MAIN["main.go — entrypoint"]
         end
         subgraph InternalLayer["internal/"]
@@ -163,7 +163,7 @@ flowchart TD
 sequenceDiagram
     autonumber
     participant Rel as New Flatcar release (any channel, incl. patch)
-    participant CLI as vex-automation CLI
+    participant CLI as flatcar-vex CLI
     participant SBOM as SBOM (this version)
     participant GLSA as GLSA corpus
     participant Prev as Previous version's VEX file
@@ -211,7 +211,7 @@ initial `affected` set to roll forward from. No history before that point is tou
 
 ```
 vex-automation/
-├── cmd/vex-automation/main.go       entrypoint
+├── cmd/flatcar-vex/main.go          entrypoint
 ├── internal/
 │   ├── cli/                         cobra subcommands (bootstrap, update, match, ...)
 │   ├── sbom/                        fetch + parse SPDX SBOM

@@ -127,6 +127,46 @@ func TestLoadDirRecursesSubdirectories(t *testing.T) {
 	}
 }
 
+func TestLoadDirIgnoresNonMatchingFilenames(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-01.xml", sampleGLSA)
+	// These must NOT be picked up: "glsa" appearing somewhere in the name is
+	// not enough, and non-.xml files are never candidates.
+	writeFile(t, dir, "not-glsa.xml", sampleGLSA)
+	writeFile(t, dir, "myglsa-202604-02.xml", sampleGLSA)
+	writeFile(t, dir, "glsa-202604-03.xml.bak", sampleGLSA)
+
+	glsas, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+	if len(glsas) != 1 {
+		t.Fatalf("got %d GLSAs, want 1 (only glsa-202604-01.xml should match)", len(glsas))
+	}
+}
+
+func TestLoadDirSkipsGitDirectory(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-01.xml", sampleGLSA)
+
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// A malformed/unexpected file matching the glsa-*.xml pattern inside
+	// .git must not be walked or it would corrupt the result (or, with a
+	// stricter LoadDir, produce an unwanted parse error).
+	writeFile(t, gitDir, "glsa-should-not-be-read.xml", "not valid xml at all")
+
+	glsas, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir returned error: %v", err)
+	}
+	if len(glsas) != 1 {
+		t.Fatalf("got %d GLSAs, want 1 (.git contents must be skipped)", len(glsas))
+	}
+}
+
 func TestMatchesArch(t *testing.T) {
 	cases := []struct {
 		arch string
