@@ -114,3 +114,29 @@ func TestBuildEmptyFindings(t *testing.T) {
 		t.Errorf("got %d statements, want 0", len(doc.Statements))
 	}
 }
+
+func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
+	findings := []match.Finding{
+		{
+			CVE: "CVE-2026-1", GLSAID: "202604-02", Affected: true,
+			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
+		},
+		{
+			CVE: "CVE-2026-1", GLSAID: "202604-01", Affected: true,
+			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse2@1.0"},
+		},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 1 {
+		t.Fatalf("got %d statements, want 1", len(doc.Statements))
+	}
+
+	const want = "Update the affected package(s) to a version that resolves this CVE (see Gentoo GLSA 202604-01, 202604-02)."
+	if got := doc.Statements[0].ActionStatement; got != want {
+		t.Errorf("ActionStatement = %q, want %q", got, want)
+	}
+}

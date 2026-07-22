@@ -124,10 +124,15 @@ func LoadDir(dir string) ([]GLSA, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(d.Name(), ".xml") {
+		if d.IsDir() {
+			// A sync-glsa-produced mirror contains a ".git" directory full of
+			// non-GLSA internals; skip it entirely rather than walking it.
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if !strings.Contains(d.Name(), "glsa") {
+		if !strings.HasPrefix(d.Name(), "glsa-") || !strings.HasSuffix(d.Name(), ".xml") {
 			return nil
 		}
 		sawFiles = true
