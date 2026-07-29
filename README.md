@@ -120,6 +120,36 @@ Useful flags:
   the SBOM's own document name).
 - `--author` – set the VEX document's author field.
 
+#### 4. (Optional) Also match golang/cargo packages against OSV.dev
+
+The Gentoo GLSA corpus only covers `ebuild`-type packages. Flatcar's SBOM also lists
+golang packages (e.g. dependencies of statically-linked Go binaries, and cargo packages
+should any appear in the future) that GLSA has no coverage for at all. Add `--osv` to
+additionally query
+[OSV.dev](https://osv.dev)'s public API for those packages and merge the results into the
+same VEX document:
+
+```console
+./bin/flatcar-vex generate \
+  --sbom flatcar_production_image_sbom.json \
+  --glsa-dir ./glsa-data \
+  --osv \
+  -o flatcar.vex.json
+```
+
+Unlike GLSA, this requires live network access and there is no local corpus to sync
+first, since OSV.dev's API is queried directly with each package's exact version (see
+[`docs/multi-source-proposal.md`](./docs/multi-source-proposal.md) for the full design
+rationale). It's opt-in and off by default so existing GLSA-only invocations are
+unaffected.
+
+Useful flags:
+
+- `--osv` – enable OSV.dev matching (default `false`).
+- `--osv-base-url` – override the OSV.dev API base URL, e.g. for testing or a private mirror
+  (default `https://api.osv.dev`).
+- `--osv-timeout` – cap how long OSV.dev matching is allowed to run (default `5m`).
+
 #### Putting it together
 
 A one-liner that keeps the GLSA mirror fresh and regenerates the VEX document, suitable
@@ -128,6 +158,13 @@ for a scheduled job:
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data && \
 ./bin/flatcar-vex generate --sbom flatcar_production_image_sbom.json --glsa-dir ./glsa-data -o flatcar.vex.json
+```
+
+Add `--osv` to also include golang/cargo coverage in that same run:
+
+```console
+./bin/flatcar-vex sync-glsa --dest ./glsa-data && \
+./bin/flatcar-vex generate --sbom flatcar_production_image_sbom.json --glsa-dir ./glsa-data --osv -o flatcar.vex.json
 ```
 
 Please find information on:
