@@ -33,11 +33,15 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# release-please (.github/workflows/release-please.yml) creates the GitHub
+# Release and its notes/changelog when it tags a version; this workflow only
+# runs afterwards (triggered by that tag push, see
+# .github/workflows/release.yml) to attach build artifacts to the release
+# release-please already created. "keep-existing" (goreleaser's default)
+# leaves those release notes untouched, and disabling goreleaser's own
+# changelog generation avoids maintaining the same logic in two places.
+release:
+  mode: keep-existing
+
 changelog:
-  use: github
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
+  disable: true

@@ -1,0 +1,71 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      # Parses Conventional Commits since the last release, maintains a
+      # running "Release PR" with the computed version bump and generated
+      # CHANGELOG.md entry, and (once that PR is merged) tags the release
+      # and publishes the GitHub Release with notes.
+      #
+      # Uses the default secrets.GITHUB_TOKEN. Normally a tag/PR created
+      # with GITHUB_TOKEN would not trigger further workflow runs (GitHub
+      # deliberately suppresses that to prevent recursive workflow loops).
+      # We avoid needing a separate token/secret for that by NOT relying on
+      # a second, tag-triggered workflow: the goreleaser build below runs
+      # as a later step in this SAME workflow run, gated on
+      # steps.release.outputs.release_created, so no second trigger is
+      # needed at all. See googleapis/release-please-action's documented
+      # "combined workflow" pattern.
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # Fully automatic releases: no one manually clicks "merge" on the
+      # Release PR. This enables GitHub's native auto-merge on it, which
+      # still waits for required status checks (CI) on the Release PR's
+      # branch to pass before merging -- it only skips the required
+      # approving review, since this PR is never meant to be
+      # human-reviewed. That requires allow_auto_merge to be enabled and
+      # the GitHub Actions app to be a default-branch-protection
+      # bypass_actor (both configured in safe-settings-admin's
+      # .github/repos/vex-automation.yml, not here).
+      - name: Auto-merge release PR
+        if: ${{ steps.release.outputs.prs_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_number=$(jq -r '.number' <<< '${{ steps.release.outputs.pr }}')
+          gh pr merge --squash --auto "$pr_number" -R "${{ github.repository }}"
+
+      # Everything below only runs when release-please just created a new
+      # release (i.e. a release PR was merged on this push), building and
+      # attaching binaries to the release it created.
+      - uses: actions/checkout@v4
+        if: ${{ steps.release.outputs.release_created }}
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        if: ${{ steps.release.outputs.release_created }}
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run goreleaser
+        if: ${{ steps.release.outputs.release_created }}
+        run: go tool goreleaser release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
