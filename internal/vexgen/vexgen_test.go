@@ -20,15 +20,15 @@ func TestBuildGroupsByCVEAndStatus(t *testing.T) {
 	ts := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-33150", GLSAID: "202604-03", Affected: true,
+			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 		},
 		{
-			CVE: "CVE-2026-33150", GLSAID: "202604-03", Affected: true,
+			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse2@3.17.0"},
 		},
 		{
-			CVE: "CVE-2026-33179", GLSAID: "202604-03", Affected: false,
+			CVE: "CVE-2026-33179", Source: match.SourceGLSA, RefID: "202604-03", Affected: false,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "3.18.1", PURL: "pkg:ebuild/sys-fs/fuse@3.18.1"},
 		},
 	}
@@ -84,11 +84,11 @@ func TestBuildGroupsByCVEAndStatus(t *testing.T) {
 func TestBuildDeduplicatesSubcomponents(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-1", GLSAID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 		{ // duplicate PURL from matching a second CVE that got merged into this group by mistake would be a bug; here simulate the same finding twice.
-			CVE: "CVE-2026-1", GLSAID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 	}
@@ -118,11 +118,11 @@ func TestBuildEmptyFindings(t *testing.T) {
 func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-1", GLSAID: "202604-02", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-02", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 		{
-			CVE: "CVE-2026-1", GLSAID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse2@1.0"},
 		},
 	}
@@ -136,6 +136,54 @@ func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
 	}
 
 	const want = "Update the affected package(s) to a version that resolves this CVE (see Gentoo GLSA 202604-01, 202604-02)."
+	if got := doc.Statements[0].ActionStatement; got != want {
+		t.Errorf("ActionStatement = %q, want %q", got, want)
+	}
+}
+
+func TestBuildActionStatementGroupsMixedSourcesBySource(t *testing.T) {
+	findings := []match.Finding{
+		{
+			CVE: "CVE-2026-5", Source: match.SourceGLSA, RefID: "202604-02", Affected: true,
+			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
+		},
+		{
+			CVE: "CVE-2026-5", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Affected: true,
+			Package: sbom.Package{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 1 {
+		t.Fatalf("got %d statements, want 1", len(doc.Statements))
+	}
+
+	const want = "Update the affected package(s) to a version that resolves this CVE (see Gentoo GLSA 202604-02; OSV.dev advisory GHSA-aaaa-bbbb-cccc)."
+	if got := doc.Statements[0].ActionStatement; got != want {
+		t.Errorf("ActionStatement = %q, want %q", got, want)
+	}
+}
+
+func TestBuildActionStatementUsesVulnerabilityWordingForNonCVEIdentifier(t *testing.T) {
+	findings := []match.Finding{
+		{
+			CVE: "GHSA-aaaa-bbbb-cccc", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Affected: true,
+			Package: sbom.Package{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 1 {
+		t.Fatalf("got %d statements, want 1", len(doc.Statements))
+	}
+
+	const want = "Update the affected package(s) to a version that resolves this vulnerability (see OSV.dev advisory GHSA-aaaa-bbbb-cccc)."
 	if got := doc.Statements[0].ActionStatement; got != want {
 		t.Errorf("ActionStatement = %q, want %q", got, want)
 	}

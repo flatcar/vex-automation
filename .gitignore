@@ -18,3 +18,11 @@ coverage.html
 # Local scratch data for manually trying out the CLI (downloaded SBOMs, GLSA
 # corpus mirrors, generated VEX output) — never committed.
 /.local/
+
+# Generated VEX documents from manually running the CLI at the repo root
+# (e.g. `flatcar-vex generate -o flatcar.vex.json`) — never committed.
+*.vex.json
+
+# Reference-only clone of another team's repo, kept locally to study its
+# approach; not part of this project and never committed.
+/security-triage/

@@ -124,21 +124,89 @@ func subcomponents(findings []match.Finding) []vex.Subcomponent {
 }
 
 // actionStatement produces a human-readable remediation note referencing the
-// GLSA(s) that flagged the affected packages in this group.
+// source advisories (GLSA IDs, OSV.dev IDs, ...) that flagged the affected
+// packages in this group, grouped by source so mixed-source groups (e.g. the
+// same CVE flagged by both GLSA and OSV.dev) read clearly rather than as one
+// undifferentiated ID list.
 func actionStatement(findings []match.Finding) string {
-	glsaSet := map[string]bool{}
+	refsBySource := map[string]map[string]bool{}
 	for _, f := range findings {
-		glsaSet[f.GLSAID] = true
+		if f.RefID == "" {
+			continue
+		}
+		refs := refsBySource[f.Source]
+		if refs == nil {
+			refs = map[string]bool{}
+			refsBySource[f.Source] = refs
+		}
+		refs[f.RefID] = true
 	}
-	glsaIDs := make([]string, 0, len(glsaSet))
-	for id := range glsaSet {
-		glsaIDs = append(glsaIDs, id)
-	}
-	sort.Strings(glsaIDs)
 
-	msg := "Update the affected package(s) to a version that resolves this CVE"
-	if len(glsaIDs) > 0 {
-		msg += fmt.Sprintf(" (see Gentoo GLSA %s)", strings.Join(glsaIDs, ", "))
+	sources := make([]string, 0, len(refsBySource))
+	for s := range refsBySource {
+		sources = append(sources, s)
+	}
+	sort.Slice(sources, func(i, j int) bool {
+		ri, rj := sourceOrder(sources[i]), sourceOrder(sources[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return sources[i] < sources[j]
+	})
+
+	var parts []string
+	for _, source := range sources {
+		refs := make([]string, 0, len(refsBySource[source]))
+		for id := range refsBySource[source] {
+			refs = append(refs, id)
+		}
+		sort.Strings(refs)
+		parts = append(parts, fmt.Sprintf("%s %s", sourceLabel(source), strings.Join(refs, ", ")))
+	}
+
+	msg := "Update the affected package(s) to a version that resolves this " + vulnLabel(findings)
+	if len(parts) > 0 {
+		msg += fmt.Sprintf(" (see %s)", strings.Join(parts, "; "))
 	}
 	return msg + "."
+}
+
+// vulnLabel returns "CVE" when findings' shared identifier (see
+// Finding.CVE) is actually CVE-formatted, or the more accurate generic
+// "vulnerability" otherwise. OSV.dev findings can carry a non-CVE
+// identifier (e.g. a GHSA or GO ID, see osv.Vulnerability.CVE) when the
+// underlying advisory hasn't been assigned a CVE number, in which case
+// "resolves this CVE" would be misleading.
+func vulnLabel(findings []match.Finding) string {
+	if len(findings) > 0 && strings.HasPrefix(findings[0].CVE, "CVE-") {
+		return "CVE"
+	}
+	return "vulnerability"
+}
+
+// sourceOrder fixes a stable, human-sensible ordering for known sources in
+// actionStatement's output; unrecognized sources sort after all known ones
+// (alphabetically among themselves, via the caller's secondary sort key).
+func sourceOrder(source string) int {
+	switch source {
+	case match.SourceGLSA:
+		return 0
+	case match.SourceOSV:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// sourceLabel returns the human-readable prefix used for a source's
+// advisory IDs in actionStatement, e.g. "Gentoo GLSA 202604-03".
+func sourceLabel(source string) string {
+	switch source {
+	case match.SourceGLSA:
+		return "Gentoo GLSA"
+	case match.SourceOSV:
+		return "OSV.dev advisory"
+	default:
+		return source
+	}
 }
