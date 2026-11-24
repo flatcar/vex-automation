@@ -136,7 +136,8 @@ a revision bump, and any range that can't be translated is reported as `under_in
 exceptions go in `internal/match/versionscheme.go`.
 
 `generate` fails on an SBOM that isn't SPDX or has no matchable package, and on any GLSA
-file that doesn't parse. SBOM packages that no source covers (the kernel's `pkg:generic`
+file that doesn't parse or is incomplete (no `<affected>` element, or a package without a
+name or version ranges). SBOM packages that no source covers (the kernel's `pkg:generic`
 purl, Go packages built from a relative path or with a `(devel)` version) are listed in an
 info log line.
 

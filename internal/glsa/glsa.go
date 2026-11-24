@@ -78,7 +78,7 @@ type xmlGLSA struct {
 	XMLName    xml.Name
 	ID         string       `xml:"id,attr"`
 	Title      string       `xml:"title"`
-	Affected   xmlAffected  `xml:"affected"`
+	Affected   *xmlAffected `xml:"affected"`
 	References xmlReference `xml:"references"`
 }
 
@@ -191,6 +191,21 @@ func loadFile(path string) (GLSA, error) {
 	}
 	if x.XMLName.Local != "glsa" || x.ID == "" {
 		return GLSA{}, fmt.Errorf("not a GLSA document (root element <%s>, id %q)", x.XMLName.Local, x.ID)
+	}
+	// An empty <affected> is legitimate (non-vulnerability notices such as
+	// GLSA 200409-14, or infrastructure incidents), but a missing one, or a
+	// package with no name or ranges, means the advisory is incomplete and
+	// would otherwise silently match nothing.
+	if x.Affected == nil {
+		return GLSA{}, fmt.Errorf("GLSA %s has no <affected> element", x.ID)
+	}
+	for i, p := range x.Affected.Packages {
+		if strings.TrimSpace(p.Name) == "" {
+			return GLSA{}, fmt.Errorf("GLSA %s: affected package #%d has no name", x.ID, i+1)
+		}
+		if len(p.Vulnerable) == 0 && len(p.Unaffected) == 0 {
+			return GLSA{}, fmt.Errorf("GLSA %s: affected package %q has no version ranges", x.ID, p.Name)
+		}
 	}
 
 	g := GLSA{

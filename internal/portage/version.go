@@ -18,7 +18,6 @@ package portage
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -36,7 +35,12 @@ var suffixValue = map[string]int{"alpha": -4, "beta": -3, "pre": -2, "rc": -1, "
 
 type suffix struct {
 	kind string
-	num  int64 // -1 for the implicit "_p" used when one side has fewer suffixes
+	// num is the suffix number as a digit string of arbitrary length, as
+	// Portage compares it as an unbounded integer ("" counts as 0).
+	num string
+	// implicit marks the "_p-1" Portage uses when one side has fewer
+	// suffixes; it sorts below every real "_p" number, including "_p0".
+	implicit bool
 }
 
 // version is a parsed Portage version string.
@@ -69,14 +73,7 @@ func parseVersion(s string) (version, error) {
 			if sm == nil {
 				return version{}, fmt.Errorf("%q: invalid suffix %q", s, part)
 			}
-			var n int64
-			if sm[2] != "" {
-				var err error
-				if n, err = strconv.ParseInt(sm[2], 10, 64); err != nil {
-					return version{}, fmt.Errorf("%q: invalid suffix number %q: %w", s, sm[2], err)
-				}
-			}
-			v.suffixes = append(v.suffixes, suffix{kind: sm[1], num: n})
+			v.suffixes = append(v.suffixes, suffix{kind: sm[1], num: sm[2]})
 		}
 	}
 	return v, nil
@@ -146,11 +143,16 @@ func (v version) compare(o version) int {
 		if sa.kind != sb.kind {
 			return sign(suffixValue[sa.kind] - suffixValue[sb.kind])
 		}
-		if sa.num != sb.num {
-			if sa.num < sb.num {
-				return -1
-			}
+		switch {
+		case sa.implicit && sb.implicit:
+		case sa.implicit:
+			return -1
+		case sb.implicit:
 			return 1
+		default:
+			if c := compareDigits(sa.num, sb.num); c != 0 {
+				return c
+			}
 		}
 	}
 
@@ -163,7 +165,7 @@ func suffixAt(s []suffix, i int) suffix {
 	if i < len(s) {
 		return s[i]
 	}
-	return suffix{kind: "p", num: -1}
+	return suffix{kind: "p", implicit: true}
 }
 
 // compareDigits compares two non-negative decimal integers given as digit

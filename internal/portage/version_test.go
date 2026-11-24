@@ -105,6 +105,13 @@ func TestCompare(t *testing.T) {
 		// Components too large for an int64.
 		{"20251125", "20251124", 1},
 		{"1.99999999999999999999", "1.99999999999999999998", 1},
+		// Suffix numbers are unbounded too, and a missing suffix still sorts
+		// below "_p0" while an empty or zero-padded number equals 0.
+		{"1.0_p99999999999999999999", "1.0_p99999999999999999998", 1},
+		{"1.0_p99999999999999999999", "1.0", 1},
+		{"1.0_rc99999999999999999999", "1.0", -1},
+		{"1.0_p", "1.0_p0", 0},
+		{"1.0_p00", "1.0_p0", 0},
 	}
 
 	for _, tc := range cases {

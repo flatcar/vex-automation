@@ -167,6 +167,31 @@ func TestLoadDirReportsEveryParseError(t *testing.T) {
 	}
 }
 
+// Regression: an advisory with no <affected> element, or a package with no
+// name or ranges, parsed fine and silently matched nothing.
+func TestLoadDirRejectsIncompleteAdvisories(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-04.xml", `<glsa id="202604-04"/>`)
+	writeFile(t, dir, "glsa-202604-05.xml", `<glsa id="202604-05"><affected><package arch="*"><vulnerable range="lt">1.0</vulnerable></package></affected></glsa>`)
+	writeFile(t, dir, "glsa-202604-06.xml", `<glsa id="202604-06"><affected><package name="app-misc/foo" arch="*"/></affected></glsa>`)
+	// An empty <affected> is a real non-vulnerability notice (e.g. GLSA
+	// 200409-14) and must still load.
+	writeFile(t, dir, "glsa-200409-14.xml", `<glsa id="200409-14"><title>Samba: Remote printing non-vulnerability</title><affected>
+  </affected></glsa>`)
+
+	glsas, err := LoadDir(dir)
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("LoadDir error = %v, want a *ParseError", err)
+	}
+	if len(pe.Errs) != 3 {
+		t.Errorf("got %d parse errors, want 3: %v", len(pe.Errs), pe.Errs)
+	}
+	if len(glsas) != 1 || glsas[0].ID != "200409-14" || len(glsas[0].Packages) != 0 {
+		t.Errorf("got %+v, want only the empty-<affected> notice", glsas)
+	}
+}
+
 func TestLoadDirSkipsGitDirectory(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "glsa-202604-01.xml", sampleGLSA)
