@@ -67,7 +67,9 @@ those findings into the same document. This requires network access; unlike
 GLSA there is no local corpus to sync first (see
 docs/multi-source-proposal.md for why OSV.dev's API doesn't need one). Pass
 --osv=false to work offline; the document's "tooling" field then records
-that golang/cargo packages were not checked.
+that golang/cargo packages were not checked. Likewise, when
+--allow-glsa-errors skips unparseable advisories, "tooling" records how
+many were skipped.
 
 This is the most basic PoC form described in docs/plan.md: no caching or
 rolling-forward logic is included here, only the core match and generate
@@ -127,11 +129,16 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return err
 	}
 	logSkipped(doc.Skipped)
+	if !opts.osvEnabled && len(doc.Packages) == 0 {
+		return fmt.Errorf("SBOM %s has no ebuild package to match against GLSAs, and OSV.dev matching is disabled (--osv=false): nothing would be checked", opts.sbomPath)
+	}
 
 	glsas, err := glsa.LoadDir(opts.glsaDir)
 	var parseErr *glsa.ParseError
+	skippedGLSAs := 0
 	switch {
 	case errors.As(err, &parseErr) && opts.allowGLSAErrors && len(glsas) > 0:
+		skippedGLSAs = len(parseErr.Errs)
 		for _, e := range parseErr.Errs {
 			slog.Warn("skipping unparseable GLSA file", "error", e)
 		}
@@ -174,6 +181,11 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
 		findings = append(findings, osvFindings...)
+	}
+	// Like disabled OSV matching, an incomplete GLSA corpus must be visible
+	// in the document itself, not only in the logs.
+	if skippedGLSAs > 0 {
+		tooling = strings.TrimSuffix(tooling, ")") + fmt.Sprintf("; incomplete GLSA corpus, unparseable files skipped: %d)", skippedGLSAs)
 	}
 
 	vexDoc, err := vexgen.Build(findings, vexgen.Metadata{

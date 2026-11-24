@@ -310,6 +310,29 @@ func TestGenerateCmdWithOSVDisabledSkipsOSVMatching(t *testing.T) {
 	}
 }
 
+// Regression: a Go-only SBOM with --osv=false checked nothing and still
+// produced an (empty) document.
+func TestGenerateCmdRejectsNothingToCheck(t *testing.T) {
+	dir := t.TempDir()
+	sbomPath := filepath.Join(dir, "sbom.json")
+	glsaDir := filepath.Join(dir, "glsa")
+	if err := os.Mkdir(glsaDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	goOnly := strings.Replace(testSBOMWithGoModule, "pkg:ebuild/sys-fs/fuse@3.17.0", "pkg:golang/example.com/fuse@v3.17.0", 1)
+	writeTestFile(t, sbomPath, goOnly)
+	writeTestFile(t, filepath.Join(glsaDir, "glsa-202604-03.xml"), testGLSA)
+
+	cmd := NewRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"generate", "--sbom", sbomPath, "--glsa-dir", glsaDir, "--osv=false"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "nothing would be checked") {
+		t.Errorf("error = %v, want a failure because nothing would be checked", err)
+	}
+}
+
 // Regression: OSV.dev matching used to be opt-in, so the default output
 // silently ignored every golang/cargo package.
 func TestGenerateCmdQueriesOSVByDefault(t *testing.T) {
@@ -352,6 +375,16 @@ func TestGenerateCmdFailsOnMalformedGLSA(t *testing.T) {
 	}
 	if !strings.Contains(out, "CVE-2026-33150") {
 		t.Errorf("output lacks the valid GLSA's CVE: %s", out)
+	}
+	// Regression: the document itself must show that coverage is incomplete.
+	var doc struct {
+		Tooling string `json:"tooling"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("output is not valid JSON: %v\noutput: %s", err, out)
+	}
+	if !strings.Contains(doc.Tooling, "incomplete GLSA corpus, unparseable files skipped: 1") {
+		t.Errorf("tooling = %q, want it to record the skipped GLSA file", doc.Tooling)
 	}
 
 	if err := os.Remove(filepath.Join(glsaDir, "glsa-202604-03.xml")); err != nil {

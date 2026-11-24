@@ -135,7 +135,8 @@ by a later date-only bump can't be told apart from the GLSA). Any other boundary
 a revision bump, and any range that can't be translated is reported as `under_investigation`. Further
 exceptions go in `internal/match/versionscheme.go`.
 
-`generate` fails on an SBOM that isn't SPDX or has no matchable package, and on any GLSA
+`generate` fails on an SBOM that isn't SPDX or has no matchable package (no ebuild package
+at all with `--osv=false`), and on any GLSA
 file that doesn't parse or is incomplete (no `<affected>` element, or a package without a
 name or version ranges). SBOM packages that no source covers (the kernel's `pkg:generic`
 purl, Go packages built from a relative path or with a `(devel)` version) are listed in an
@@ -149,7 +150,7 @@ Useful flags:
   there is none).
 - `--author` – set the VEX document's author field.
 - `--allow-glsa-errors` – log GLSA files that fail to parse and continue without them,
-  instead of failing.
+  instead of failing. The document's `tooling` field then records how many were skipped.
 
 #### 4. golang/cargo packages and OSV.dev
 

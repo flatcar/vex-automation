@@ -79,10 +79,12 @@ func parseVersion(s string) (version, error) {
 	return v, nil
 }
 
-// withoutRevision returns v with its "-rN" revision removed.
-func (v version) withoutRevision() version {
-	v.revision = ""
-	return v
+// base returns v's original text without its "-rN" revision.
+func (v version) base() string {
+	if i := strings.LastIndex(v.original, "-r"); i >= 0 {
+		return v.original[:i]
+	}
+	return v.original
 }
 
 // Compare compares two Portage version strings. It returns -1, 0 or 1 if a
@@ -201,7 +203,8 @@ func sign(n int) int {
 //     trailing "*" (e.g. "2.4*") is Portage's "=*" glob, which matches on
 //     version component boundaries only ("2.4.1" matches, "2.40" doesn't).
 //   - "rge", "rgt", "rle", "rlt": revision-only comparisons. They only match
-//     an installed version with the same base version as constraint, and
+//     an installed version whose base version is spelled exactly like
+//     constraint's (Portage's "~" match), and
 //     then compare the "-rN" revisions alone, as in Portage's glsa.py
 //     revisionMatch. So "1.0-r2" satisfies "rge 1.0-r1", but "1.5" doesn't.
 func Satisfies(installed, op, constraint string) (bool, error) {
@@ -230,7 +233,9 @@ func Satisfies(installed, op, constraint string) (bool, error) {
 	case "eq":
 		return vi.compare(vc) == 0, nil
 	case "rge", "rgt", "rle", "rlt":
-		if vi.withoutRevision().compare(vc.withoutRevision()) != 0 {
+		// Portage matches the base with a "~" atom, which requires the
+		// version text to be identical, so "1.010" is not "1.01".
+		if vi.base() != vc.base() {
 			return false, nil
 		}
 		c := compareDigits(vi.revision, vc.revision)

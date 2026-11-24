@@ -168,6 +168,11 @@ func TestSatisfies(t *testing.T) {
 		{"1.0", "rlt", "1.0-r1", true},
 		{"1.0-r1", "rlt", "1.0-r1", false},
 		{"0.5", "rlt", "1.0-r1", false},
+		// Regression: Portage's "~" requires the same base spelling, so
+		// "1.010" (== "1.01" for vercmp) is a different base.
+		{"1.010-r2", "rge", "1.01-r1", false},
+		{"1.010", "rlt", "1.01-r1", false},
+		{"1.01-r0", "rlt", "1.01-r1", true},
 	}
 
 	for _, tc := range cases {
