@@ -16,19 +16,19 @@ func TestBuildRequiresProductID(t *testing.T) {
 	}
 }
 
-func TestBuildGroupsByCVEAndStatus(t *testing.T) {
+func TestBuildGroupsFindingsByCVE(t *testing.T) {
 	ts := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Affected: true,
+			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 		},
 		{
-			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Affected: true,
+			CVE: "CVE-2026-33150", Source: match.SourceGLSA, RefID: "202604-03", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse2@3.17.0"},
 		},
 		{
-			CVE: "CVE-2026-33179", Source: match.SourceGLSA, RefID: "202604-03", Affected: false,
+			CVE: "CVE-2026-33179", Source: match.SourceGLSA, RefID: "202604-03", Status: match.StatusFixed,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "3.18.1", PURL: "pkg:ebuild/sys-fs/fuse@3.18.1"},
 		},
 	}
@@ -46,7 +46,7 @@ func TestBuildGroupsByCVEAndStatus(t *testing.T) {
 	}
 
 	if len(doc.Statements) != 2 {
-		t.Fatalf("got %d statements, want 2 (one per distinct CVE+status group): %+v", len(doc.Statements), doc.Statements)
+		t.Fatalf("got %d statements, want 2 (one per CVE): %+v", len(doc.Statements), doc.Statements)
 	}
 
 	affected := doc.Statements[0]
@@ -81,14 +81,84 @@ func TestBuildGroupsByCVEAndStatus(t *testing.T) {
 	}
 }
 
+// Regression: a CVE with one fixed and one affected package used to produce
+// two contradicting statements (fixed and affected) for the same product.
+func TestBuildOneStatementPerCVEUsingMostSevereStatus(t *testing.T) {
+	findings := []match.Finding{
+		{
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusFixed,
+			Package: sbom.Package{Category: "dev-lang", Name: "python", Version: "3.11.9", PURL: "pkg:ebuild/dev-lang/python@3.11.9"},
+		},
+		{
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusAffected,
+			Package: sbom.Package{Category: "dev-lang", Name: "python", Version: "3.12.1", PURL: "pkg:ebuild/dev-lang/python@3.12.1"},
+		},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 1 {
+		t.Fatalf("got %d statements, want 1: %+v", len(doc.Statements), doc.Statements)
+	}
+	stmt := doc.Statements[0]
+	if stmt.Status != vex.StatusAffected {
+		t.Errorf("Status = %q, want affected", stmt.Status)
+	}
+	subs := stmt.Products[0].Subcomponents
+	if len(subs) != 1 || subs[0].Identifiers[vex.PURL] != "pkg:ebuild/dev-lang/python@3.12.1" {
+		t.Errorf("subcomponents = %+v, want only the affected python@3.12.1", subs)
+	}
+}
+
+func TestBuildStatusMapping(t *testing.T) {
+	pkg := sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"}
+	findings := []match.Finding{
+		{CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusNotAffected, Package: pkg},
+		{CVE: "CVE-2026-2", Source: match.SourceGLSA, RefID: "202604-02", Status: match.StatusUnderInvestigation, Note: "bad version", Package: pkg},
+		{CVE: "CVE-2026-2", Source: match.SourceGLSA, RefID: "202604-02", Status: match.StatusFixed, Package: pkg},
+	}
+
+	doc, err := Build(findings, Metadata{ProductID: "pkg:generic/flatcar@1.0", Tooling: "vex-automation (sources: glsa)"})
+	if err != nil {
+		t.Fatalf("Build returned error: %v", err)
+	}
+	if len(doc.Statements) != 2 {
+		t.Fatalf("got %d statements, want 2", len(doc.Statements))
+	}
+	if doc.Tooling != "vex-automation (sources: glsa)" {
+		t.Errorf("Tooling = %q", doc.Tooling)
+	}
+
+	notAffected := doc.Statements[0]
+	if notAffected.Status != vex.StatusNotAffected || notAffected.Justification != vex.VulnerableCodeNotPresent {
+		t.Errorf("Statements[0] = %q/%q, want not_affected/vulnerable_code_not_present", notAffected.Status, notAffected.Justification)
+	}
+	if err := notAffected.Validate(); err != nil {
+		t.Errorf("not_affected statement is invalid OpenVEX: %v", err)
+	}
+
+	investigating := doc.Statements[1]
+	if investigating.Status != vex.StatusUnderInvestigation {
+		t.Errorf("Statements[1].Status = %q, want under_investigation (beats fixed)", investigating.Status)
+	}
+	if investigating.StatusNotes != "bad version" {
+		t.Errorf("StatusNotes = %q, want the finding's note", investigating.StatusNotes)
+	}
+	if err := investigating.Validate(); err != nil {
+		t.Errorf("under_investigation statement is invalid OpenVEX: %v", err)
+	}
+}
+
 func TestBuildDeduplicatesSubcomponents(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 		{ // duplicate PURL from matching a second CVE that got merged into this group by mistake would be a bug; here simulate the same finding twice.
-			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 	}
@@ -118,11 +188,11 @@ func TestBuildEmptyFindings(t *testing.T) {
 func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-02", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-02", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 		{
-			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Affected: true,
+			CVE: "CVE-2026-1", Source: match.SourceGLSA, RefID: "202604-01", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse2", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse2@1.0"},
 		},
 	}
@@ -144,11 +214,11 @@ func TestBuildActionStatementJoinsMultipleGLSAIDs(t *testing.T) {
 func TestBuildActionStatementGroupsMixedSourcesBySource(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "CVE-2026-5", Source: match.SourceGLSA, RefID: "202604-02", Affected: true,
+			CVE: "CVE-2026-5", Source: match.SourceGLSA, RefID: "202604-02", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "sys-fs", Name: "fuse", Version: "1.0", PURL: "pkg:ebuild/sys-fs/fuse@1.0"},
 		},
 		{
-			CVE: "CVE-2026-5", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Affected: true,
+			CVE: "CVE-2026-5", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 		},
 	}
@@ -170,7 +240,7 @@ func TestBuildActionStatementGroupsMixedSourcesBySource(t *testing.T) {
 func TestBuildActionStatementUsesVulnerabilityWordingForNonCVEIdentifier(t *testing.T) {
 	findings := []match.Finding{
 		{
-			CVE: "GHSA-aaaa-bbbb-cccc", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Affected: true,
+			CVE: "GHSA-aaaa-bbbb-cccc", Source: match.SourceOSV, RefID: "GHSA-aaaa-bbbb-cccc", Status: match.StatusAffected,
 			Package: sbom.Package{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 		},
 	}

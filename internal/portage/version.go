@@ -1,67 +1,56 @@
-// Package portage implements a best-effort comparator for Portage (Gentoo
-// ebuild) package versions, following the version syntax described in the
-// Package Manager Specification (PMS) closely enough to correctly evaluate
-// the vast majority of real-world GLSA version ranges.
+// Package portage implements a comparator for Portage (Gentoo ebuild)
+// package versions and the GLSA range operators built on top of it.
 //
-// # Known limitations
-//
-// This is intentionally not a complete PMS implementation:
-//   - Numeric components are compared as integers. PMS technically compares
-//     components with leading zeros as decimal strings (so "1.010" < "1.02"
-//     because "010" < "02" as strings once trailing zeros are considered) —
-//     an edge case essentially never seen in practice for the packages
-//     Flatcar ships. This implementation instead compares them numerically
-//     (so "1.010" == "1.10"), which is correct for the overwhelming majority
-//     of real version strings.
-//   - Only one "_suffix" component (e.g. "_alpha1", "_p20240101") is
-//     supported per version, which matches real-world usage; the PMS
-//     grammar technically allows a chain of several.
+// Version comparison is a direct port of Portage's own vercmp
+// (lib/portage/versions.py), including its handling of leading zeros
+// ("1.02" < "1.1"), implicit missing components ("1.0" < "1.0.0"), chained
+// "_suffix" components ("1.0_rc1_p2") and revisions. Range operators follow
+// lib/portage/glsa.py: "rge"/"rgt"/"rle"/"rlt" are revision-only
+// comparisons within the same base version, and "eq" with a trailing "*"
+// is Portage's "=*" glob match.
 //
 // If a version string can't be parsed at all, comparisons involving it
 // return an error instead of silently guessing, so callers can decide how to
-// handle (e.g. treat as "unknown"/needs investigation) rather than emit an
+// handle it (e.g. report it as under investigation) rather than emit an
 // incorrect VEX statement.
 package portage
 
 import (
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
-// versionPattern captures: numeric dotted components, an optional single
-// trailing letter, an optional "_suffix[number]" component, and an optional
-// "-r<revision>".
-//
-// Examples this matches: "1.2.3", "2.0.6", "3.18.1", "1.2c", "1.0_pre3",
-// "1.2.3-r1", "1.2.3_p20240101-r2".
+// versionPattern mirrors Portage's ver_regexp: numeric dotted components,
+// an optional single trailing letter, any number of "_suffix[number]"
+// components, and an optional "-r<revision>".
 var versionPattern = regexp.MustCompile(
-	`^(?P<numeric>\d+(?:\.\d+)*)` +
-		`(?P<letter>[a-z])?` +
-		`(?:_(?P<suffixkind>alpha|beta|pre|rc|p)(?P<suffixnum>\d*))?` +
-		`(?:-r(?P<revision>\d+))?$`,
+	`^(\d+)((?:\.\d+)*)([a-z]?)((?:_(?:pre|p|beta|alpha|rc)\d*)*)(?:-r(\d+))?$`,
 )
 
-// suffixRank orders the "_suffix" component per PMS: alpha < beta < pre < rc
-// < (no suffix) < p.
-var suffixRank = map[string]int{
-	"alpha": 0,
-	"beta":  1,
-	"pre":   2,
-	"rc":    3,
-	"":      4,
-	"p":     5,
+var suffixPattern = regexp.MustCompile(`^(alpha|beta|rc|pre|p)(\d*)$`)
+
+// suffixValue orders "_suffix" kinds exactly as Portage's suffix_value does.
+var suffixValue = map[string]int{"alpha": -4, "beta": -3, "pre": -2, "rc": -1, "p": 0}
+
+type suffix struct {
+	kind string
+	// num is the suffix number as a digit string of arbitrary length, as
+	// Portage compares it as an unbounded integer ("" counts as 0).
+	num string
+	// implicit marks the "_p-1" Portage uses when one side has fewer
+	// suffixes; it sorts below every real "_p" number, including "_p0".
+	implicit bool
 }
 
 // version is a parsed Portage version string.
 type version struct {
-	numeric    []int
-	letter     byte // 0 if absent
-	suffixKind string
-	suffixNum  int
-	revision   int
-	original   string
+	first    string   // first numeric component, digits only
+	rest     []string // remaining numeric components, digits only
+	letter   byte     // 0 if absent
+	suffixes []suffix
+	revision string // digits, "" if absent
+	original string
 }
 
 // parseVersion parses a Portage version string such as "255.4-r2".
@@ -71,46 +60,31 @@ func parseVersion(s string) (version, error) {
 		return version{}, fmt.Errorf("%q is not a recognizable Portage version", s)
 	}
 
-	groups := map[string]string{}
-	for i, name := range versionPattern.SubexpNames() {
-		if name != "" {
-			groups[name] = m[i]
+	v := version{first: m[1], revision: m[5], original: s}
+	if m[2] != "" {
+		v.rest = strings.Split(m[2][1:], ".")
+	}
+	if m[3] != "" {
+		v.letter = m[3][0]
+	}
+	if m[4] != "" {
+		for _, part := range strings.Split(m[4][1:], "_") {
+			sm := suffixPattern.FindStringSubmatch(part)
+			if sm == nil {
+				return version{}, fmt.Errorf("%q: invalid suffix %q", s, part)
+			}
+			v.suffixes = append(v.suffixes, suffix{kind: sm[1], num: sm[2]})
 		}
 	}
-
-	var v version
-	v.original = s
-
-	for _, part := range strings.Split(groups["numeric"], ".") {
-		n, err := strconv.Atoi(part)
-		if err != nil {
-			return version{}, fmt.Errorf("%q: invalid numeric component %q: %w", s, part, err)
-		}
-		v.numeric = append(v.numeric, n)
-	}
-
-	if groups["letter"] != "" {
-		v.letter = groups["letter"][0]
-	}
-
-	v.suffixKind = groups["suffixkind"]
-	if groups["suffixnum"] != "" {
-		n, err := strconv.Atoi(groups["suffixnum"])
-		if err != nil {
-			return version{}, fmt.Errorf("%q: invalid suffix number %q: %w", s, groups["suffixnum"], err)
-		}
-		v.suffixNum = n
-	}
-
-	if groups["revision"] != "" {
-		n, err := strconv.Atoi(groups["revision"])
-		if err != nil {
-			return version{}, fmt.Errorf("%q: invalid revision %q: %w", s, groups["revision"], err)
-		}
-		v.revision = n
-	}
-
 	return v, nil
+}
+
+// base returns v's original text without its "-rN" revision.
+func (v version) base() string {
+	if i := strings.LastIndex(v.original, "-r"); i >= 0 {
+		return v.original[:i]
+	}
+	return v.original
 }
 
 // Compare compares two Portage version strings. It returns -1, 0 or 1 if a
@@ -128,40 +102,86 @@ func Compare(a, b string) (int, error) {
 	return va.compare(vb), nil
 }
 
+// compare is a port of Portage's vercmp.
 func (v version) compare(o version) int {
-	if c := compareNumeric(v.numeric, o.numeric); c != 0 {
+	if c := compareDigits(v.first, o.first); c != 0 {
 		return c
 	}
-	if c := compareByte(v.letter, o.letter); c != 0 {
-		return c
+
+	for i := 0; i < len(v.rest) || i < len(o.rest); i++ {
+		// A missing component sorts below any present one, so "1.0" < "1.0.0".
+		if i >= len(v.rest) {
+			return -1
+		}
+		if i >= len(o.rest) {
+			return 1
+		}
+		a, b := v.rest[i], o.rest[i]
+		var c int
+		if a[0] != '0' && b[0] != '0' {
+			c = compareDigits(a, b)
+		} else {
+			// Leading zero: compare as a decimal fraction, so "02" < "1".
+			width := max(len(a), len(b))
+			c = strings.Compare(padRight(a, width), padRight(b, width))
+		}
+		if c != 0 {
+			return c
+		}
 	}
-	if c := suffixRank[v.suffixKind] - suffixRank[o.suffixKind]; c != 0 {
-		return sign(c)
+
+	switch {
+	case v.letter == o.letter:
+	case v.letter == 0:
+		return -1
+	case o.letter == 0:
+		return 1
+	default:
+		return sign(int(v.letter) - int(o.letter))
 	}
-	if c := v.suffixNum - o.suffixNum; c != 0 {
-		return sign(c)
+
+	for i := 0; i < len(v.suffixes) || i < len(o.suffixes); i++ {
+		sa, sb := suffixAt(v.suffixes, i), suffixAt(o.suffixes, i)
+		if sa.kind != sb.kind {
+			return sign(suffixValue[sa.kind] - suffixValue[sb.kind])
+		}
+		switch {
+		case sa.implicit && sb.implicit:
+		case sa.implicit:
+			return -1
+		case sb.implicit:
+			return 1
+		default:
+			if c := compareDigits(sa.num, sb.num); c != 0 {
+				return c
+			}
+		}
 	}
-	return sign(v.revision - o.revision)
+
+	return compareDigits(v.revision, o.revision)
 }
 
-func compareNumeric(a, b []int) int {
-	for i := 0; i < len(a) || i < len(b); i++ {
-		var av, bv int
-		if i < len(a) {
-			av = a[i]
-		}
-		if i < len(b) {
-			bv = b[i]
-		}
-		if av != bv {
-			return sign(av - bv)
-		}
+// suffixAt returns s[i], or the implicit "_p-1" Portage uses for a missing
+// suffix (so "1.0" < "1.0_p0" but "1.0_rc1" < "1.0").
+func suffixAt(s []suffix, i int) suffix {
+	if i < len(s) {
+		return s[i]
 	}
-	return 0
+	return suffix{kind: "p", implicit: true}
 }
 
-func compareByte(a, b byte) int {
-	return sign(int(a) - int(b))
+// compareDigits compares two non-negative decimal integers given as digit
+// strings of arbitrary length ("" counts as 0).
+func compareDigits(a, b string) int {
+	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	if len(a) != len(b) {
+		return sign(len(a) - len(b))
+	}
+	return strings.Compare(a, b)
+}
+
+func padRight(s string, width int) string {
+	return s + strings.Repeat("0", width-len(s))
 }
 
 func sign(n int) int {
@@ -175,37 +195,103 @@ func sign(n int) int {
 	}
 }
 
-// Satisfies reports whether version satisfies the constraint "installed <op>
-// constraint", e.g. Satisfies("2.0.7", "ge", "2.0.6") reports whether
-// 2.0.7 >= 2.0.6. Supported ops are "ge", "gt", "le", "lt", "eq", matching
-// the operators used in GLSA <unaffected>/<vulnerable> range attributes.
-// "rge"/"rlt" (revision-only ranges) are treated the same as "ge"/"lt" here,
-// since Flatcar's SBOM always reports the full version including revision.
+// Satisfies reports whether installed satisfies "installed <op> constraint",
+// e.g. Satisfies("2.0.7", "ge", "2.0.6") reports whether 2.0.7 >= 2.0.6.
+// Supported ops are the GLSA <unaffected>/<vulnerable> range attributes:
+//
+//   - "ge", "gt", "le", "lt", "eq": plain version comparisons. "eq" with a
+//     trailing "*" (e.g. "2.4*") is Portage's "=*" glob, which matches on
+//     version component boundaries only ("2.4.1" matches, "2.40" doesn't).
+//   - "rge", "rgt", "rle", "rlt": revision-only comparisons. They only match
+//     an installed version whose base version is spelled exactly like
+//     constraint's (Portage's "~" match), and
+//     then compare the "-rN" revisions alone, as in Portage's glsa.py
+//     revisionMatch. So "1.0-r2" satisfies "rge 1.0-r1", but "1.5" doesn't.
 func Satisfies(installed, op, constraint string) (bool, error) {
-	// GLSA "eq" ranges may use a trailing "*" wildcard, e.g. "2.4*", meaning
-	// "any version with this prefix" (handled as a plain string prefix match
-	// rather than full version parsing, per Gentoo's glsa-check semantics).
 	if op == "eq" && strings.HasSuffix(constraint, "*") {
-		return strings.HasPrefix(installed, strings.TrimSuffix(constraint, "*")), nil
+		return globMatch(installed, strings.TrimSuffix(constraint, "*"))
 	}
 
-	c, err := Compare(installed, constraint)
+	vi, err := parseVersion(installed)
+	if err != nil {
+		return false, err
+	}
+	vc, err := parseVersion(constraint)
 	if err != nil {
 		return false, err
 	}
 
 	switch op {
-	case "ge", "rge":
-		return c >= 0, nil
+	case "ge":
+		return vi.compare(vc) >= 0, nil
 	case "gt":
-		return c > 0, nil
+		return vi.compare(vc) > 0, nil
 	case "le":
-		return c <= 0, nil
-	case "lt", "rlt":
-		return c < 0, nil
+		return vi.compare(vc) <= 0, nil
+	case "lt":
+		return vi.compare(vc) < 0, nil
 	case "eq":
-		return c == 0, nil
+		return vi.compare(vc) == 0, nil
+	case "rge", "rgt", "rle", "rlt":
+		// Portage matches the base with a "~" atom, which requires the
+		// version text to be identical, so "1.010" is not "1.01".
+		if vi.base() != vc.base() {
+			return false, nil
+		}
+		c := compareDigits(vi.revision, vc.revision)
+		switch op {
+		case "rge":
+			return c >= 0, nil
+		case "rgt":
+			return c > 0, nil
+		case "rle":
+			return c <= 0, nil
+		default:
+			return c < 0, nil
+		}
 	default:
 		return false, fmt.Errorf("unsupported range operator %q", op)
 	}
+}
+
+// globMatch implements Portage's "=*" match (lib/portage/dep, match_from_list):
+// a literal prefix match after normalizing leading zeros of the first
+// component, which must end on a version component boundary (Gentoo bug
+// 560466: "1*" must not match "10").
+func globMatch(installed, prefix string) (bool, error) {
+	if prefix == "" {
+		return false, fmt.Errorf("empty version glob")
+	}
+	// The glob without its "*" must itself be a valid version prefix.
+	if _, err := parseVersion(prefix); err != nil {
+		return false, err
+	}
+	if _, err := parseVersion(installed); err != nil {
+		return false, err
+	}
+
+	installed, prefix = trimLeadingZeros(installed), trimLeadingZeros(prefix)
+	if !strings.HasPrefix(installed, prefix) {
+		return false, nil
+	}
+	if len(installed) == len(prefix) {
+		return true, nil
+	}
+	next := installed[len(prefix)]
+	if strings.IndexByte("._-", next) >= 0 {
+		return true, nil
+	}
+	return isDigit(prefix[len(prefix)-1]) != isDigit(next), nil
+}
+
+func trimLeadingZeros(v string) string {
+	t := strings.TrimLeft(v, "0")
+	if t == "" || !isDigit(t[0]) {
+		return "0" + t
+	}
+	return t
+}
+
+func isDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }

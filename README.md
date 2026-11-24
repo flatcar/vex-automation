@@ -109,43 +109,72 @@ Feed the SBOM and the synced GLSA directory into `generate`:
 ```
 
 This matches every `ebuild`-type package in the SBOM against every GLSA advisory (using
-real Portage version-range comparison, not naive semver) and writes an
+a port of Portage's own version comparison, including `*` globs and the revision-only
+`rge`/`rgt`/`rle`/`rlt` operators) and writes an
 [OpenVEX](https://github.com/openvex/spec) document to `flatcar.vex.json`. Omit `-o` to
 print the document to stdout instead.
+
+Each CVE gets one statement. Its status follows `glsa-check`: a version in an
+`<unaffected>` range is `fixed`, otherwise a version in a `<vulnerable>` range is
+`affected`. A version in neither is `fixed` if it is newer than a fix (e.g. samba 4.22 against
+`rge 4.11.6`) and `not_affected` (justification `vulnerable_code_not_present`) otherwise.
+If the installed version can't be evaluated (unparseable version, or a range restricted to
+a SLOT that can't be inferred, since the SBOM doesn't record slots) the status is `under_investigation` with
+the reason in `status_notes`. This includes a version that only such a range shows to be fixed,
+because in another slot it would be `not_affected`. A numeric slot such as `3.12` is inferred to be the installed
+version's branch only when the advisory lists a slot matching that branch. When several packages disagree about one CVE, the most severe
+status wins (`affected` > `under_investigation` > `fixed` > `not_affected`). A GLSA that
+references no CVE is reported as `GLSA-<id>`.
+
+`app-misc/ca-certificates` is compared by NSS version, because Flatcar versions it by NSS
+release (`3.125`) while Gentoo uses `<date>.<NSS version>` (`20260816.3.125`), or only a date
+before 2014. Date-only bundles from before 2014 count as older than any NSS 3.17 or newer.
+A range boundary at Flatcar's own NSS version is only trusted for the usual `lt X` / `ge X`
+pair without a revision, assuming X is Gentoo's first bundle for that NSS release (a fix made
+by a later date-only bump can't be told apart from the GLSA). Any other boundary there, such as
+a revision bump, and any range that can't be translated is reported as `under_investigation`. Further
+exceptions go in `internal/match/versionscheme.go`.
+
+`generate` fails on an SBOM that isn't SPDX or has no matchable package (no ebuild package
+at all with `--osv=false`), and on any GLSA
+file that doesn't parse or is incomplete (no `<affected>` element, or a package without a
+name or version ranges). SBOM packages that no source covers (the kernel's `pkg:generic`
+purl, Go packages built from a relative path or with a `(devel)` version) are listed in an
+info log line.
 
 Useful flags:
 
 - `--arch` – architecture to filter GLSA `<package arch="...">` entries against (default `amd64`).
 - `--product-id` – override the VEX document's product identifier (default: derived from
-  the SBOM's own document name).
+  the `<group>-<version>` path segment of the SBOM's document name; `generate` fails if
+  there is none).
 - `--author` – set the VEX document's author field.
+- `--allow-glsa-errors` – log GLSA files that fail to parse and continue without them,
+  instead of failing. The document's `tooling` field then records how many were skipped.
 
-#### 4. (Optional) Also match golang/cargo packages against OSV.dev
+#### 4. golang/cargo packages and OSV.dev
 
 The Gentoo GLSA corpus only covers `ebuild`-type packages. Flatcar's SBOM also lists
 golang packages (e.g. dependencies of statically-linked Go binaries, and cargo packages
-should any appear in the future) that GLSA has no coverage for at all. Add `--osv` to
-additionally query
-[OSV.dev](https://osv.dev)'s public API for those packages and merge the results into the
-same VEX document:
-
-```console
-./bin/flatcar-vex generate \
-  --sbom flatcar_production_image_sbom.json \
-  --glsa-dir ./glsa-data \
-  --osv \
-  -o flatcar.vex.json
-```
+should any appear in the future) that GLSA has no coverage for at all. `generate` queries
+[OSV.dev](https://osv.dev)'s public API for those packages and merges the results into the
+same VEX document. Go purl subpaths are part of the module path
+(`pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4` is queried as module
+`github.com/golang-jwt/jwt/v4`), and the `go` prefix of Syft's `stdlib` version is dropped.
+Packages are queried by OSV ecosystem and name rather than by purl, because OSV.dev lowercases
+golang purls and would miss mixed-case module paths such as `github.com/Azure/...`.
+Every CVE alias of an OSV.dev record gets its own statement.
 
 Unlike GLSA, this requires live network access and there is no local corpus to sync
 first, since OSV.dev's API is queried directly with each package's exact version (see
 [`docs/multi-source-proposal.md`](./docs/multi-source-proposal.md) for the full design
-rationale). It's opt-in and off by default so existing GLSA-only invocations are
-unaffected.
+rationale). Paginated results are followed, and rate-limit or server errors are retried
+with backoff. Pass `--osv=false` to work offline; a warning is logged and the document's
+`tooling` field records that golang/cargo packages were not checked.
 
 Useful flags:
 
-- `--osv` – enable OSV.dev matching (default `false`).
+- `--osv` – OSV.dev matching (default `true`).
 - `--osv-base-url` – override the OSV.dev API base URL, e.g. for testing or a private mirror
   (default `https://api.osv.dev`).
 - `--osv-timeout` – cap how long OSV.dev matching is allowed to run (default `5m`).
@@ -160,12 +189,7 @@ for a scheduled job:
 ./bin/flatcar-vex generate --sbom flatcar_production_image_sbom.json --glsa-dir ./glsa-data -o flatcar.vex.json
 ```
 
-Add `--osv` to also include golang/cargo coverage in that same run:
-
-```console
-./bin/flatcar-vex sync-glsa --dest ./glsa-data && \
-./bin/flatcar-vex generate --sbom flatcar_production_image_sbom.json --glsa-dir ./glsa-data --osv -o flatcar.vex.json
-```
+Add `--osv=false` to skip the OSV.dev queries (GLSA-only, no network for `generate`).
 
 Please find information on:
 

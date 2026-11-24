@@ -19,8 +19,8 @@ func NewRootCmd() *cobra.Command {
 		Long: `flatcar-vex generates machine-readable OpenVEX documents for Flatcar
 Container Linux releases, by matching release SBOMs against the Gentoo GLSA
 corpus (ebuild packages, using only data Flatcar and Gentoo already publish)
-and, optionally, OSV.dev's public API (golang/cargo packages; requires live
-network access to an external data source, see "generate --help").
+and OSV.dev's public API (golang/cargo packages; requires live network
+access, disable with "generate --osv=false").
 
 See docs/plan.md in this repository for the full design and current status.`,
 		Version: Version,
