@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0](https://github.com/flatcar/vex-automation/compare/flatcar-vex-v1.0.0...flatcar-vex-v2.0.0) (2026-11-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* correct GLSA/OSV matching, VEX statuses and SBOM/GLSA parsing ([#11](https://github.com/flatcar/vex-automation/issues/11))
+
+### Bug Fixes
+
+* correct GLSA/OSV matching, VEX statuses and SBOM/GLSA parsing ([#11](https://github.com/flatcar/vex-automation/issues/11)) ([84fdb4d](https://github.com/flatcar/vex-automation/commit/84fdb4dd17179d21c82a7308d1ac33e9016b8963))
+
 ## 1.0.0 (2026-07-29)
 
 
