@@ -18,6 +18,7 @@ package sbom
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -31,10 +32,15 @@ type Package struct {
 	Category string
 	// Name is the package name within its category (ebuild), or the
 	// module/crate path (golang/cargo), e.g. "systemd" or
-	// "cloud.google.com/go/storage".
+	// "cloud.google.com/go/storage". For golang, a purl subpath is part of
+	// the module path and is folded in, so
+	// "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4" has Name
+	// "github.com/golang-jwt/jwt/v4".
 	Name string
 	// Version is the installed package version, e.g. "255.4-r2" or
-	// "v1.57.0".
+	// "v1.57.0". For the golang "stdlib" and "toolchain" pseudo-modules,
+	// Syft's "go" prefix is removed ("go1.25.3" becomes "1.25.3"), which is
+	// the form OSV.dev expects.
 	Version string
 	// PURL is the original package URL as it appeared in the SBOM, e.g.
 	// "pkg:ebuild/sys-apps/systemd@255.4-r2". Kept verbatim (including
@@ -52,8 +58,9 @@ func (p Package) CategoryName() string {
 // document mirrors only the subset of the SPDX 2.3 JSON schema this package
 // needs. Fields not used for VEX generation are intentionally omitted.
 type document struct {
-	Name     string        `json:"name"`
-	Packages []spdxPackage `json:"packages"`
+	SPDXVersion string        `json:"spdxVersion"`
+	Name        string        `json:"name"`
+	Packages    []spdxPackage `json:"packages"`
 }
 
 type spdxPackage struct {
@@ -95,11 +102,29 @@ type Document struct {
 	// (internal/osv). These have zero GLSA coverage today (~1070 of
 	// ~1400 packages in the current production SBOM).
 	OSVPackages []Package
+	// Skipped lists the SBOM packages that are matched against no
+	// vulnerability source, with the reason, so callers can report the
+	// coverage gap instead of silently dropping them (e.g. the kernel's
+	// "pkg:generic" purl, or Go packages built from a relative path).
+	Skipped []SkippedPackage
+}
+
+// SkippedPackage is an SBOM package that Load could not assign to any
+// vulnerability source.
+type SkippedPackage struct {
+	Name    string
+	Version string
+	// PURL is the package's first purl, or empty if it has none.
+	PURL   string
+	Reason string
 }
 
 // Load reads an SPDX JSON SBOM from path and returns every package it
 // describes, split into Packages (ebuild) and OSVPackages (golang/cargo),
-// along with the document's own metadata.
+// along with the document's own metadata. It fails if the file isn't an
+// SPDX document or contains no package that can be matched against any
+// vulnerability source, since an empty VEX document built from such input
+// would wrongly look like a clean bill of health.
 func Load(path string) (Document, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path is an explicit user-provided CLI flag.
 	if err != nil {
@@ -110,34 +135,82 @@ func Load(path string) (Document, error) {
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return Document{}, fmt.Errorf("parsing SBOM file %q as SPDX JSON: %w", path, err)
 	}
+	if !strings.HasPrefix(doc.SPDXVersion, "SPDX-") {
+		return Document{}, fmt.Errorf("SBOM file %q is not an SPDX document (spdxVersion is %q)", path, doc.SPDXVersion)
+	}
 
 	result := Document{Name: doc.Name}
 	for _, sp := range doc.Packages {
+		skip := func(purl, reason string) {
+			result.Skipped = append(result.Skipped, SkippedPackage{Name: sp.Name, Version: sp.VersionInfo, PURL: purl, Reason: reason})
+		}
+
 		if purl, ok := ebuildPurl(sp); ok {
-			if category, name, ok := parseEbuildPurl(purl); ok {
-				result.Packages = append(result.Packages, Package{
-					Category: category,
+			category, name, ok := parseEbuildPurl(purl)
+			if !ok {
+				skip(purl, "malformed ebuild purl")
+				continue
+			}
+			result.Packages = append(result.Packages, Package{
+				Category: category,
+				Name:     name,
+				Version:  sp.VersionInfo,
+				PURL:     purl,
+			})
+			continue
+		}
+
+		if purl, ecosystem, ok := osvPurl(sp); ok {
+			name, ok := parseOSVPurl(purl, ecosystem)
+			switch {
+			case !ok:
+				skip(purl, "purl does not name a module that OSV.dev can be queried about")
+			case !isQueryableVersion(sp.VersionInfo):
+				skip(purl, "version is not queryable")
+			default:
+				result.OSVPackages = append(result.OSVPackages, Package{
+					Category: ecosystem,
 					Name:     name,
-					Version:  sp.VersionInfo,
+					Version:  osvVersion(ecosystem, name, sp.VersionInfo),
 					PURL:     purl,
 				})
 			}
 			continue
 		}
 
-		if purl, ecosystem, ok := osvPurl(sp); ok {
-			if name, ok := parseOSVPurl(purl, ecosystem); ok && isQueryableVersion(sp.VersionInfo) {
-				result.OSVPackages = append(result.OSVPackages, Package{
-					Category: ecosystem,
-					Name:     name,
-					Version:  sp.VersionInfo,
-					PURL:     purl,
-				})
-			}
+		purl := firstPurl(sp)
+		if purl == "" {
+			skip("", "no purl")
+		} else {
+			skip(purl, "unsupported purl type")
 		}
 	}
 
+	if len(result.Packages) == 0 && len(result.OSVPackages) == 0 {
+		return Document{}, fmt.Errorf("SBOM file %q contains no ebuild, golang or cargo package to match", path)
+	}
 	return result, nil
+}
+
+// firstPurl returns the first purl reference of sp, or "".
+func firstPurl(sp spdxPackage) string {
+	for _, ref := range sp.ExternalRefs {
+		if ref.ReferenceType == "purl" {
+			return ref.ReferenceLocator
+		}
+	}
+	return ""
+}
+
+// osvVersion normalizes an SPDX versionInfo for OSV.dev: Syft reports the
+// Go standard library and toolchain as "go1.25.3", but OSV.dev's Go
+// ecosystem lists them as "1.25.3", and the prefixed form matches every
+// historical stdlib vulnerability.
+func osvVersion(ecosystem, name, version string) string {
+	if ecosystem == "golang" && (name == "stdlib" || name == "toolchain") {
+		return strings.TrimPrefix(version, "go")
+	}
+	return version
 }
 
 // ebuildPurl returns the ebuild purl of an SPDX package, if it has one.
@@ -186,6 +259,14 @@ func parseEbuildPurl(purl string) (category, name string, ok bool) {
 // "pkg:<ecosystem>/<name>@<version>[?qualifiers][#subpath]". As with
 // parseEbuildPurl, the version itself is read from versionInfo, not here.
 //
+// For golang, Syft puts the part of a module path below the repository in
+// the subpath, e.g. "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4" is
+// module "github.com/golang-jwt/jwt/v4" and
+// "pkg:golang/github.com/aws/aws-sdk-go-v2@v1.88.4#service/s3" is
+// "github.com/aws/aws-sdk-go-v2/service/s3". The subpath is therefore
+// appended to the name, otherwise OSV.dev would be asked about the parent
+// module at the child's version. Other ecosystems ignore the subpath.
+//
 // Some Syft-generated golang purls describe build-internal packages rather
 // than real, queryable modules, e.g. "pkg:golang/../api@(devel)" for a
 // package built from a relative path within its own main module (verified
@@ -196,9 +277,25 @@ func parseEbuildPurl(purl string) (category, name string, ok bool) {
 // versions.
 func parseOSVPurl(purl, ecosystem string) (name string, ok bool) {
 	rest := strings.TrimPrefix(purl, "pkg:"+ecosystem+"/")
+	rest, subpath, _ := strings.Cut(rest, "#")
+	rest, _, _ = strings.Cut(rest, "?")
 	name, _, found := strings.Cut(rest, "@")
 	if !found || name == "" || strings.HasPrefix(name, ".") {
 		return "", false
+	}
+	name, err := url.PathUnescape(name)
+	if err != nil {
+		return "", false
+	}
+
+	if ecosystem == "golang" {
+		subpath, err = url.PathUnescape(strings.Trim(subpath, "/"))
+		if err != nil {
+			return "", false
+		}
+		if subpath != "" {
+			name += "/" + subpath
+		}
 	}
 	return name, true
 }

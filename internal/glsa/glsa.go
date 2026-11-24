@@ -9,6 +9,7 @@ package glsa
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,9 +61,10 @@ func (p AffectedPackage) MatchesArch(arch string) bool {
 
 // VersionRange is a single <unaffected>/<vulnerable> version constraint.
 type VersionRange struct {
-	// Op is the comparison operator: one of "ge", "gt", "le", "lt", "eq",
-	// "rge" or "rlt" (the latter two are revision-only range comparisons,
-	// rarely used).
+	// Op is the comparison operator: one of "ge", "gt", "le", "lt", "eq"
+	// (Version may end in "*" for a Portage glob match), or the
+	// revision-only "rge", "rgt", "rle", "rlt", which compare only the -rN
+	// revision of the same base version (see portage.Satisfies).
 	Op string
 	// Slot restricts the range to a specific Portage SLOT, if set.
 	Slot string
@@ -73,6 +75,7 @@ type VersionRange struct {
 // --- XML schema (subset) ---
 
 type xmlGLSA struct {
+	XMLName    xml.Name
 	ID         string       `xml:"id,attr"`
 	Title      string       `xml:"title"`
 	Affected   xmlAffected  `xml:"affected"`
@@ -108,16 +111,32 @@ type xmlURI struct {
 // cveRegexp matches CVE identifiers within GLSA reference text/links.
 var cveRegexp = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
 
+// ParseError is returned by LoadDir when some GLSA files could not be
+// parsed. The GLSAs that did parse are still returned alongside it, so a
+// caller may choose to continue with a partial corpus.
+type ParseError struct {
+	// Errs holds one error per file that failed to parse.
+	Errs []error
+}
+
+func (e *ParseError) Error() string {
+	return fmt.Sprintf("%d GLSA file(s) failed to parse: %v", len(e.Errs), errors.Join(e.Errs...))
+}
+
+func (e *ParseError) Unwrap() []error { return e.Errs }
+
 // LoadDir walks dir (non-recursively is not enough for flatcar/scripts'
 // layout, so this recurses) and parses every "glsa-*.xml" file it finds.
-// Files that fail to parse are skipped with an error collected and returned
-// only if no GLSA could be loaded at all; a handful of malformed/unexpected
-// files should not abort processing the rest of a ~3.8k-file corpus.
+//
+// Files that fail to parse don't stop the walk: every GLSA that parsed is
+// returned together with a *ParseError listing each failure, so a single
+// malformed advisory can never silently drop out of the corpus. Callers
+// that want to proceed anyway can check for *ParseError with errors.As.
 func LoadDir(dir string) ([]GLSA, error) {
 	var (
-		glsas    []GLSA
-		lastErr  error
-		sawFiles bool
+		glsas     []GLSA
+		parseErrs []error
+		sawFiles  bool
 	)
 
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -139,7 +158,7 @@ func LoadDir(dir string) ([]GLSA, error) {
 
 		g, parseErr := loadFile(path)
 		if parseErr != nil {
-			lastErr = fmt.Errorf("parsing %q: %w", path, parseErr)
+			parseErrs = append(parseErrs, fmt.Errorf("parsing %q: %w", path, parseErr))
 			return nil
 		}
 		glsas = append(glsas, g)
@@ -151,12 +170,12 @@ func LoadDir(dir string) ([]GLSA, error) {
 	if !sawFiles {
 		return nil, fmt.Errorf("no glsa-*.xml files found under %q", dir)
 	}
-	if len(glsas) == 0 && lastErr != nil {
-		return nil, lastErr
-	}
 
 	sort.Slice(glsas, func(i, j int) bool { return glsas[i].ID < glsas[j].ID })
 
+	if len(parseErrs) > 0 {
+		return glsas, &ParseError{Errs: parseErrs}
+	}
 	return glsas, nil
 }
 
@@ -169,6 +188,9 @@ func loadFile(path string) (GLSA, error) {
 	var x xmlGLSA
 	if err := xml.Unmarshal(raw, &x); err != nil {
 		return GLSA{}, err
+	}
+	if x.XMLName.Local != "glsa" || x.ID == "" {
+		return GLSA{}, fmt.Errorf("not a GLSA document (root element <%s>, id %q)", x.XMLName.Local, x.ID)
 	}
 
 	g := GLSA{

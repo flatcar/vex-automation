@@ -47,7 +47,7 @@ every case.
 - No AI-assisted triage of new GLSAs into GitHub issues (the "Slow Path" from the original
   sketch) — that's a separate, later phase.
 - ~~No coverage of non-`ebuild` packages (golang/rust modules in the SBOM) yet~~ —
-  **implemented**: `--osv` now additionally matches golang/cargo packages against OSV.dev
+  **implemented**: `generate` also matches golang/cargo packages against OSV.dev by default
   (see Decision Log #10 and [`docs/multi-source-proposal.md`](./multi-source-proposal.md)).
 - No decision yet on public hosting/publishing location for the resulting VEX files
   (see Open Questions #2).
@@ -70,7 +70,7 @@ every case.
 | 7 | **Architecture: CLI tool + thin GitHub Actions orchestration**, not logic embedded in workflow YAML | Matches existing Flatcar convention (`show-fixed-kernel-cves.py`, `sync_with_gentoo.sh` are real scripts called from workflows). Keeps matching/diffing/VEX-generation logic unit-testable, locally runnable, and versionable independent of any CI trigger. |
 | 8 | **Project scaffold: adapt the [`hello-go`](https://github.com/John15321/hello-go) template** | Modern Go 1.24+ tool-dependency pattern, cobra CLI, clean `cmd/`+`internal/` layout, working lint/test/release CI already wired up — solid base to extend rather than build from scratch. |
 | 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. [`hello-go`](https://github.com/John15321/hello-go)'s own MIT license needs to be dropped when adapting the template — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
-| 10 | **OSV.dev integration (Future Phase Candidate #1) implemented as an opt-in `--osv` flag**, no local version-range matching | Each `querybatch` query is purl+exact-version, so any vulnerability ID OSV.dev returns already applies (unlike GLSA, there's no "is this version in range" step or "fixed" case). `Finding.GLSAID` was generalized to `Finding.Source`/`Finding.RefID` so `vexgen`'s action-statement text stays correct across mixed GLSA+OSV.dev findings. Kept opt-in (default off) since it requires live network access, unlike the fully-local GLSA path; kernel-CVE-feed and oss-security (candidates #2 and a related later addition) remain deferred. See [`docs/multi-source-proposal.md`](./multi-source-proposal.md) for the full design. |
+| 10 | **OSV.dev integration (Future Phase Candidate #1) implemented, on by default (`--osv=false` to opt out)**, no local version-range matching | Each `querybatch` query is package+exact-version, so any vulnerability ID OSV.dev returns already applies (unlike GLSA, there's no "is this version in range" step or "fixed" case). `Finding.GLSAID` was generalized to `Finding.Source`/`Finding.RefID` so `vexgen`'s action-statement text stays correct across mixed GLSA+OSV.dev findings. It was first opt-in because it needs live network access, but a GLSA-only default silently left ~1,000 golang packages unchecked, so it is now on by default; `--osv=false` remains for offline runs and is recorded in the document's `tooling` field. Kernel-CVE-feed and oss-security (candidates #2 and a related later addition) remain deferred. See [`docs/multi-source-proposal.md`](./multi-source-proposal.md) for the full design. |
 
 ---
 
@@ -250,7 +250,7 @@ vex-automation/
 
 | # | Candidate | Why |
 |---|-----------|-----|
-| 1 | ~~**OSV.dev integration** for non-`ebuild` packages~~ (**Implemented**, see Decision Log #10) | SBOM's golang purls (1070 of ~1400 packages) have zero GLSA coverage today. OSV.dev's API is purl-native (`{"package":{"purl":"pkg:golang/...@v1.2.3"}}`, batchable) and already aggregates Go vulndb, GHSA, RustSec, PyPI Advisory DB — one integration instead of many. |
+| 1 | ~~**OSV.dev integration** for non-`ebuild` packages~~ (**Implemented**, see Decision Log #10) | SBOM's golang purls (1070 of ~1400 packages) have zero GLSA coverage today. OSV.dev's API is batchable and queried per package and exact version (`{"package":{"name":"github.com/...","ecosystem":"Go"},"version":"v1.2.3"}`) and already aggregates Go vulndb, GHSA, RustSec, PyPI Advisory DB — one integration instead of many. |
 | 2 | **Kernel CVE feed** (`lore.kernel.org/linux-cve-announce`) as its own source | Kernel CVEs largely have no formal GLSA; this feed already exists and is proven (used by `show-fixed-kernel-cves.py`) but currently only feeds changelog text, not VEX. |
 | 3 | **Human-override loop** — connect the existing manual advisory issues (Path C) to VEX | See §8 below — the key mechanism for correcting "assumed affected" GLSA/OSV matches once a maintainer determines Flatcar isn't actually exploitable. |
 | 4 | **Real-time trigger via GLSA RSS feed** (`security.gentoo.org/glsa/feed.rss`, verified live) | Decouples "affected" detection from Flatcar's own monthly rsync cadence — closer to the original plan's "Fast Path," updates between releases rather than only at release time. |

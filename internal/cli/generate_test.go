@@ -17,6 +17,7 @@ import (
 )
 
 const testSBOM = `{
+  "spdxVersion": "SPDX-2.3",
   "name": "/home/sdk/trunk/src/build/images/amd64-usr/stable-4593.2.4-a1/rootfs-with-sysext-pkgs",
   "packages": [
     {
@@ -32,6 +33,7 @@ const testSBOM = `{
 // testSBOMWithGoModule additionally describes a golang purl, for exercising
 // --osv matching.
 const testSBOMWithGoModule = `{
+  "spdxVersion": "SPDX-2.3",
   "name": "/home/sdk/trunk/src/build/images/amd64-usr/stable-4593.2.4-a1/rootfs-with-sysext-pkgs",
   "packages": [
     {
@@ -273,7 +275,7 @@ func TestGenerateCmdWithOSVMergesFindings(t *testing.T) {
 	}
 }
 
-func TestGenerateCmdWithoutOSVFlagSkipsOSVMatching(t *testing.T) {
+func TestGenerateCmdWithOSVDisabledSkipsOSVMatching(t *testing.T) {
 	dir := t.TempDir()
 	sbomPath := filepath.Join(dir, "sbom.json")
 	glsaDir := filepath.Join(dir, "glsa")
@@ -287,10 +289,9 @@ func TestGenerateCmdWithoutOSVFlagSkipsOSVMatching(t *testing.T) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	// Deliberately no --osv flag and no network access: this must not make
-	// any HTTP request, and the golang package present in the SBOM must be
-	// silently ignored (same as today's GLSA-only behavior).
-	cmd.SetArgs([]string{"generate", "--sbom", sbomPath, "--glsa-dir", glsaDir})
+	// --osv=false and no network access: this must not make any HTTP
+	// request, and the document must say the golang package went unchecked.
+	cmd.SetArgs([]string{"generate", "--sbom", sbomPath, "--glsa-dir", glsaDir, "--osv=false"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute returned error: %v\noutput: %s", err, out.String())
@@ -303,6 +304,61 @@ func TestGenerateCmdWithoutOSVFlagSkipsOSVMatching(t *testing.T) {
 	statements, _ := doc["statements"].([]any)
 	if len(statements) != 1 {
 		t.Fatalf("expected 1 statement (GLSA only, OSV.dev not queried), got %d: %v", len(statements), statements)
+	}
+	if tooling, _ := doc["tooling"].(string); !strings.Contains(tooling, "OSV.dev disabled") {
+		t.Errorf("tooling = %q, want it to record that OSV.dev was disabled", tooling)
+	}
+}
+
+// Regression: OSV.dev matching used to be opt-in, so the default output
+// silently ignored every golang/cargo package.
+func TestGenerateCmdQueriesOSVByDefault(t *testing.T) {
+	gen, _, err := NewRootCmd().Find([]string{"generate"})
+	if err != nil {
+		t.Fatalf("finding generate command: %v", err)
+	}
+	if got := gen.Flags().Lookup("osv").DefValue; got != "true" {
+		t.Errorf("--osv default = %s, want true", got)
+	}
+}
+
+func TestGenerateCmdFailsOnMalformedGLSA(t *testing.T) {
+	dir := t.TempDir()
+	sbomPath := filepath.Join(dir, "sbom.json")
+	glsaDir := filepath.Join(dir, "glsa")
+	if err := os.Mkdir(glsaDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeTestFile(t, sbomPath, testSBOM)
+	writeTestFile(t, filepath.Join(glsaDir, "glsa-202604-03.xml"), testGLSA)
+	writeTestFile(t, filepath.Join(glsaDir, "glsa-202604-04.xml"), testGLSA[:40])
+
+	run := func(extra ...string) (string, error) {
+		cmd := NewRootCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(append([]string{"generate", "--sbom", sbomPath, "--glsa-dir", glsaDir}, extra...))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	if _, err := run(); err == nil || !strings.Contains(err.Error(), "--allow-glsa-errors") {
+		t.Errorf("error = %v, want a GLSA parse failure suggesting --allow-glsa-errors", err)
+	}
+	out, err := run("--allow-glsa-errors")
+	if err != nil {
+		t.Fatalf("with --allow-glsa-errors: %v", err)
+	}
+	if !strings.Contains(out, "CVE-2026-33150") {
+		t.Errorf("output lacks the valid GLSA's CVE: %s", out)
+	}
+
+	if err := os.Remove(filepath.Join(glsaDir, "glsa-202604-03.xml")); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := run("--allow-glsa-errors"); err == nil || !strings.Contains(err.Error(), "no GLSA file") {
+		t.Errorf("error = %v, want a failure when no GLSA file parses even with --allow-glsa-errors", err)
 	}
 }
 
@@ -439,14 +495,20 @@ func TestDeriveProductID(t *testing.T) {
 			want: "pkg:generic/flatcar-container-linux@4600.0.0?channel=beta",
 		},
 		{
-			name: "unrecognized-name",
-			want: "pkg:generic/flatcar-container-linux",
+			// Regression: non-release groups used to lose their version.
+			name: "/home/sdk/trunk/src/build/images/arm64-usr/developer-4628.0.0+nightly-20260101-2100-a1/rootfs-with-sysext-pkgs",
+			want: "pkg:generic/flatcar-container-linux@4628.0.0%2Bnightly-20260101-2100-a1?channel=developer",
 		},
 	}
 
 	for _, tc := range cases {
-		if got := deriveProductID(tc.name); got != tc.want {
-			t.Errorf("deriveProductID(%q) = %q, want %q", tc.name, got, tc.want)
+		got, err := deriveProductID(tc.name)
+		if err != nil || got != tc.want {
+			t.Errorf("deriveProductID(%q) = %q, %v, want %q", tc.name, got, err, tc.want)
 		}
+	}
+
+	if got, err := deriveProductID("unrecognized-name"); err == nil {
+		t.Errorf("deriveProductID(unrecognized-name) = %q, want an error asking for --product-id", got)
 	}
 }

@@ -1,6 +1,7 @@
 package glsa
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,6 +143,27 @@ func TestLoadDirIgnoresNonMatchingFilenames(t *testing.T) {
 	}
 	if len(glsas) != 1 {
 		t.Fatalf("got %d GLSAs, want 1 (only glsa-202604-01.xml should match)", len(glsas))
+	}
+}
+
+// Regression: a malformed GLSA next to valid ones used to be dropped with
+// no error and no log.
+func TestLoadDirReportsEveryParseError(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "glsa-202604-03.xml", sampleGLSA)
+	writeFile(t, dir, "glsa-202604-04.xml", sampleGLSA[:len(sampleGLSA)/2])
+	writeFile(t, dir, "glsa-202604-05.xml", `<?xml version="1.0"?><html></html>`)
+
+	glsas, err := LoadDir(dir)
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("LoadDir error = %v, want a *ParseError", err)
+	}
+	if len(pe.Errs) != 2 {
+		t.Errorf("got %d parse errors, want 2: %v", len(pe.Errs), pe.Errs)
+	}
+	if len(glsas) != 1 || glsas[0].ID != "202604-03" {
+		t.Errorf("got %+v, want the one valid GLSA still returned", glsas)
 	}
 }
 

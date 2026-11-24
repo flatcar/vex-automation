@@ -39,7 +39,7 @@ flowchart TB
     end
 
     EBUILD --> GLSA["✅ GLSA<br/>(Phase 1, done)"]
-    OTHER --> OSVDONE["✅ OSV.dev<br/>(implemented, --osv flag)"]
+    OTHER --> OSVDONE["✅ OSV.dev<br/>(implemented, on by default)"]
 
     classDef done fill:#2e7d32,color:#fff,stroke:#1b5e20;
     classDef box fill:#37474f,color:#fff,stroke:#263238;
@@ -142,9 +142,10 @@ flowchart LR
 **Per-source notes:**
 
 - **`internal/osv`** (implemented, see `docs/plan.md` Decision Log #10): OSV.dev's `POST
-  api.osv.dev/v1/querybatch` is purl-native and batchable: request body is
-  `{"queries":[{"package":{"purl":"pkg:golang/...@v1.2.3"}}, ...]}`, one query per SBOM
-  package, response ordering guaranteed to match the input (verified directly against
+  api.osv.dev/v1/querybatch` is batchable: request body is
+  `{"queries":[{"package":{"name":"github.com/...","ecosystem":"Go"},"version":"v1.2.3"}, ...]}`,
+  one query per SBOM package. (Purl queries also work, but OSV.dev lowercases golang purls, so
+  a mixed-case module path such as `github.com/Azure/...` silently matches nothing.) Response ordering guaranteed to match the input (verified directly against
   `google.github.io/osv.dev`'s API reference). **Caveat confirmed while writing this
   proposal:** `querybatch` returns only vulnerability IDs + `modified` timestamps, not full
   advisory data, so a second `GET /v1/vulns/{id}` call per unique ID returned is needed to get
@@ -202,11 +203,12 @@ Current `Finding` fields relevant to multi-source dedup (already implemented):
 
 ```go
 type Finding struct {
-    CVE      string
-    Package  sbom.Package
-    Affected bool
-    Source   string   // "glsa", "osv"; future: "kernel-cve", "oss-security"
-    RefID    string   // source-specific advisory ID (GLSA ID or OSV.dev vuln ID)
+    CVE     string
+    Package sbom.Package
+    Status  Status   // affected, fixed, not_affected or under_investigation
+    Note    string   // why, for under_investigation
+    Source  string   // "glsa", "osv"; future: "kernel-cve", "oss-security"
+    RefID   string   // source-specific advisory ID (GLSA ID or OSV.dev vuln ID)
 }
 ```
 
@@ -219,18 +221,18 @@ handling), so both need their own follow-up design discussion before implementat
 a slot in this rollout table.
 
 > **Status: `internal/osv` is implemented** (`internal/osv`, `internal/match.RunOSV`,
-> `generate --osv`). Step 2 (a dedicated dedup/precedence layer) turned out to be
+> `generate`, on by default). Step 2 (a dedicated dedup/precedence layer) turned out to be
 > unnecessary for this pairing: GLSA and OSV.dev match disjoint package categories (`ebuild`
 > vs. `golang`/`cargo`), so there is no case today where both sources report the same
-> package for the same CVE. `vexgen` already deduplicates subcomponents by purl within a
-> (CVE, status) group and labels findings by source (see `docs/plan.md` Decision Log #10),
+> package for the same CVE. `vexgen` emits one statement per CVE using the most severe status,
+> deduplicates its subcomponents by purl, and labels findings by source (see `docs/plan.md` Decision Log #10),
 > which is sufficient while sources don't overlap. A real dedup/precedence layer (Open
 > Question #8) remains a prerequisite for `internal/kernelcve`/`internal/osssecurity`, since
 > either could plausibly flag the same package the other sources also cover.
 
 | Step | Source | Effort | Rationale |
 |---|---|---|---|
-| 1 | `internal/osv` | Small | Purl-native API, no corpus mirroring, closes the largest coverage gap (~1070 of ~1395 SBOM packages, 0% covered today). **Implemented** — see status note above. |
+| 1 | `internal/osv` | Small | Batchable per-package API, no corpus mirroring, closes the largest coverage gap (~1070 of ~1395 SBOM packages, 0% covered today). **Implemented** — see status note above. |
 | 2 | Dedup/precedence layer in `internal/match` | Small | Needed before adding any further source to avoid double-counting; also resolves Open Question #8. **Not needed for OSV.dev** (disjoint package categories from GLSA — see status note above); still needed before `internal/kernelcve`/`internal/osssecurity`. |
 | — | `internal/kernelcve` | Deferred to next phase | Genuinely new work, not adapting a proven pattern (see §4) — needs its own design pass covering Atom-feed parsing, branch matching, and caching before scoping |
 | — | `internal/osssecurity` | Deferred, open question | Needs a decision on non-deterministic extraction (§4) before scoping |

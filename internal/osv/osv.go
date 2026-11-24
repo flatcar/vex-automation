@@ -4,11 +4,12 @@
 // of ~1395 packages in the current production SBOM) that has zero GLSA
 // coverage (see docs/plan.md, Decision Log #10).
 //
-// OSV.dev's API is purl-native and requires no authentication or API key
+// OSV.dev's API requires no authentication or API key
 // (per the public API docs at https://google.github.io/osv.dev/api/).
 // Querying it is a two-step process, unlike the single XML corpus GLSA mirrors:
 //
-//  1. POST /v1/querybatch, one query per unique package purl. This returns
+//  1. POST /v1/querybatch, one query per unique package (by OSV ecosystem
+//     and name for golang/cargo, see newQuery, else by purl). This returns
 //     only vulnerability IDs (+ a "modified" timestamp), not full advisory
 //     data (https://google.github.io/osv.dev/post-v1-querybatch/).
 //  2. GET /v1/vulns/{id} for each unique ID returned, to fetch the
@@ -26,13 +27,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DefaultBaseURL is OSV.dev's production API endpoint.
@@ -66,16 +71,24 @@ type Vulnerability struct {
 	Summary string
 }
 
-// CVE returns the first CVE-formatted alias, or ID itself if this
-// vulnerability has no CVE alias (common for GHSA/GO advisories that
-// haven't been assigned a CVE number).
-func (v Vulnerability) CVE() string {
-	for _, alias := range v.Aliases {
-		if strings.HasPrefix(alias, "CVE-") {
-			return alias
+// CVEs returns every CVE-formatted identifier among ID and Aliases, sorted
+// and deduplicated, or just ID if there are none (common for GHSA/GO
+// advisories that haven't been assigned a CVE number). A single OSV.dev
+// record can cover several CVEs, and each must be reported.
+func (v Vulnerability) CVEs() []string {
+	seen := map[string]bool{}
+	var cves []string
+	for _, id := range append([]string{v.ID}, v.Aliases...) {
+		if strings.HasPrefix(id, "CVE-") && !seen[id] {
+			seen[id] = true
+			cves = append(cves, id)
 		}
 	}
-	return v.ID
+	if len(cves) == 0 {
+		return []string{v.ID}
+	}
+	sort.Strings(cves)
+	return cves
 }
 
 // Client queries the OSV.dev API.
@@ -94,6 +107,9 @@ type Client struct {
 	// strictly sequentially (e.g. for a private mirror sensitive to
 	// concurrent load).
 	VulnFetchConcurrency int
+	// RetryBackoff is the delay before the first retry of a rate-limited
+	// or server-error response, DefaultRetryBackoff if zero.
+	RetryBackoff time.Duration
 }
 
 // NewClient returns a Client configured to talk to the real OSV.dev API.
@@ -173,9 +189,11 @@ func (c *Client) Query(ctx context.Context, purls []string) (map[string][]Vulner
 	result := make(map[string][]Vulnerability, len(idsByPurl))
 	for purl, ids := range idsByPurl {
 		for _, id := range ids {
-			if v, ok := vulnsByID[id]; ok {
-				result[purl] = append(result[purl], v)
+			v, ok := vulnsByID[id]
+			if !ok {
+				return nil, fmt.Errorf("osv: vulnerability %q returned by querybatch was not fetched", id)
 			}
+			result[purl] = append(result[purl], v)
 		}
 		sort.Slice(result[purl], func(i, j int) bool { return result[purl][i].ID < result[purl][j].ID })
 	}
@@ -204,11 +222,48 @@ type queryBatchRequest struct {
 }
 
 type query struct {
-	Package queryPackage `json:"package"`
+	Package   queryPackage `json:"package"`
+	Version   string       `json:"version,omitempty"`
+	PageToken string       `json:"page_token,omitempty"`
 }
 
+// queryPackage identifies the package to query: by Name and Ecosystem
+// (with the version in query.Version) for the ecosystems in purlEcosystems,
+// else by PURL. OSV.dev lowercases golang purls on lookup, so a purl query
+// for a mixed-case module path like github.com/Azure/... silently matches
+// nothing, while the name query is case-preserving.
 type queryPackage struct {
-	PURL string `json:"purl"`
+	PURL      string `json:"purl,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Ecosystem string `json:"ecosystem,omitempty"`
+}
+
+// purlEcosystems maps purl types to OSV.dev ecosystem names.
+var purlEcosystems = map[string]string{
+	"golang": "Go",
+	"cargo":  "crates.io",
+}
+
+// newQuery builds the querybatch entry for a versioned purl of the form
+// "pkg:<type>/<name>@<version>" (qualifiers and subpath, if any, are not
+// part of the OSV.dev package identity and are dropped).
+func newQuery(purl string) query {
+	rest, ok := strings.CutPrefix(purl, "pkg:")
+	if ok {
+		rest, _, _ = strings.Cut(rest, "#")
+		rest, _, _ = strings.Cut(rest, "?")
+		typ, nameVersion, _ := strings.Cut(rest, "/")
+		at := strings.LastIndex(nameVersion, "@")
+		eco := purlEcosystems[strings.ToLower(typ)]
+		if eco != "" && at > 0 && at < len(nameVersion)-1 {
+			name, nameErr := url.PathUnescape(nameVersion[:at])
+			version, versionErr := url.PathUnescape(nameVersion[at+1:])
+			if nameErr == nil && versionErr == nil {
+				return query{Package: queryPackage{Name: name, Ecosystem: eco}, Version: version}
+			}
+		}
+	}
+	return query{Package: queryPackage{PURL: purl}}
 }
 
 type queryBatchResponse struct {
@@ -216,7 +271,8 @@ type queryBatchResponse struct {
 }
 
 type queryResult struct {
-	Vulns []queryVuln `json:"vulns"`
+	Vulns         []queryVuln `json:"vulns"`
+	NextPageToken string      `json:"next_page_token"`
 }
 
 type queryVuln struct {
@@ -248,35 +304,61 @@ func (c *Client) queryBatch(ctx context.Context, purls []string) (map[string][]s
 	return result, nil
 }
 
-// queryBatchOnce performs a single POST /v1/querybatch call for purls,
-// returning one []string of vulnerability IDs per input purl, in the same
-// order (the API guarantees response ordering matches the request).
+// maxPagesPerQuery bounds how many pages are requested for a single purl,
+// so a misbehaving server that always returns a page token can't loop
+// forever. OSV.dev pages after 1,000 vulnerabilities per query, so this
+// allows far more than any real package has.
+const maxPagesPerQuery = 100
+
+// queryBatchOnce performs POST /v1/querybatch calls for purls, returning
+// one []string of vulnerability IDs per input purl, in the same order (the
+// API guarantees response ordering matches the request). OSV.dev paginates
+// a query's results when it has too many vulnerabilities, returning a
+// next_page_token; such queries are re-sent with that token until every
+// page has been collected.
 func (c *Client) queryBatchOnce(ctx context.Context, purls []string) ([][]string, error) {
-	req := queryBatchRequest{Queries: make([]query, len(purls))}
-	for i, p := range purls {
-		req.Queries[i] = query{Package: queryPackage{PURL: p}}
-	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("osv: encoding querybatch request: %w", err)
-	}
-
-	var resp queryBatchResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/querybatch", body, &resp); err != nil {
-		return nil, fmt.Errorf("osv: querybatch for %d package(s): %w", len(purls), err)
-	}
-	if len(resp.Results) != len(purls) {
-		return nil, fmt.Errorf("osv: querybatch returned %d result(s) for %d package(s)", len(resp.Results), len(purls))
-	}
-
 	out := make([][]string, len(purls))
-	for i, r := range resp.Results {
-		ids := make([]string, len(r.Vulns))
-		for j, v := range r.Vulns {
-			ids[j] = v.ID
+	pending := make([]int, len(purls)) // indices into purls still needing a page
+	tokens := make([]string, len(purls))
+	for i := range purls {
+		pending[i] = i
+	}
+
+	for page := 0; len(pending) > 0; page++ {
+		if page >= maxPagesPerQuery {
+			return nil, fmt.Errorf("osv: querybatch still paginating after %d pages", maxPagesPerQuery)
 		}
-		out[i] = ids
+
+		req := queryBatchRequest{Queries: make([]query, len(pending))}
+		for j, i := range pending {
+			req.Queries[j] = newQuery(purls[i])
+			req.Queries[j].PageToken = tokens[i]
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			return nil, fmt.Errorf("osv: encoding querybatch request: %w", err)
+		}
+
+		var resp queryBatchResponse
+		if err := c.doJSON(ctx, http.MethodPost, "/v1/querybatch", body, &resp); err != nil {
+			return nil, fmt.Errorf("osv: querybatch for %d package(s): %w", len(pending), err)
+		}
+		if len(resp.Results) != len(pending) {
+			return nil, fmt.Errorf("osv: querybatch returned %d result(s) for %d package(s)", len(resp.Results), len(pending))
+		}
+
+		var next []int
+		for j, r := range resp.Results {
+			i := pending[j]
+			for _, v := range r.Vulns {
+				out[i] = append(out[i], v.ID)
+			}
+			if r.NextPageToken != "" {
+				tokens[i] = r.NextPageToken
+				next = append(next, i)
+			}
+		}
+		pending = next
 	}
 	return out, nil
 }
@@ -298,12 +380,12 @@ type vulnResponse struct {
 // ID would scale goroutine count with input size rather than with the
 // concurrency limit. On the first error, remaining in-flight/queued
 // fetches are canceled and that error is returned.
-func (c *Client) fetchVulnerabilities(ctx context.Context, ids []string) (map[string]Vulnerability, error) {
+func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map[string]Vulnerability, error) {
 	if len(ids) == 0 {
 		return map[string]Vulnerability{}, nil
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	type result struct {
@@ -334,6 +416,10 @@ func (c *Client) fetchVulnerabilities(ctx context.Context, ids []string) (map[st
 				// an untrusted upstream response, see queryBatch above).
 				if err := c.doJSON(ctx, http.MethodGet, "/v1/vulns/"+url.PathEscape(id), nil, &resp); err != nil {
 					results <- result{id: id, err: fmt.Errorf("osv: fetching vulnerability %q: %w", id, err)}
+					continue
+				}
+				if resp.ID == "" || (resp.ID != id && !slices.Contains(resp.Aliases, id)) {
+					results <- result{id: id, err: fmt.Errorf("osv: fetching vulnerability %q: response is for %q", id, resp.ID)}
 					continue
 				}
 				results <- result{id: id, v: Vulnerability(resp)}
@@ -372,13 +458,84 @@ func (c *Client) fetchVulnerabilities(ctx context.Context, ids []string) (map[st
 	if firstErr != nil {
 		return nil, firstErr
 	}
+	// A canceled parent stops the job feeder without any worker failing,
+	// which would otherwise return a silently incomplete map.
+	if err := parent.Err(); err != nil {
+		return nil, fmt.Errorf("osv: fetching vulnerabilities: %w", err)
+	}
 	return out, nil
+}
+
+// maxAttempts is how many times a request is tried in total when OSV.dev
+// answers with a transient status (429 or 5xx).
+const maxAttempts = 3
+
+// DefaultRetryBackoff is the delay before the first retry of a transient
+// failure; it doubles on each further retry, unless the server sends a
+// Retry-After header.
+const DefaultRetryBackoff = time.Second
+
+// maxRetryAfter caps how long a server-sent Retry-After may delay a retry.
+const maxRetryAfter = time.Minute
+
+// statusError is returned for a non-200 response.
+type statusError struct {
+	method, path string
+	code         int
+	msg          string
+	retryAfter   time.Duration
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("%s %s: unexpected status %d: %s", e.method, e.path, e.code, e.msg)
+}
+
+func (e *statusError) transient() bool {
+	return e.code == http.StatusTooManyRequests || e.code >= 500
+}
+
+func (c *Client) retryBackoff() time.Duration {
+	if c.RetryBackoff > 0 {
+		return c.RetryBackoff
+	}
+	return DefaultRetryBackoff
 }
 
 // doJSON performs an HTTP request against path (relative to BaseURL),
 // sending body (if non-nil) as the request body, and decodes a JSON
-// response into out.
+// response into out. Rate-limited (429) and server-error (5xx) responses
+// are retried up to maxAttempts times with exponential backoff, honoring a
+// Retry-After header given in seconds.
 func (c *Client) doJSON(ctx context.Context, method, path string, body []byte, out any) error {
+	backoff := c.retryBackoff()
+	for attempt := 1; ; attempt++ {
+		err := c.doJSONOnce(ctx, method, path, body, out)
+		var se *statusError
+		if err == nil || !errors.As(err, &se) || !se.transient() || attempt >= maxAttempts {
+			return err
+		}
+		timer := time.NewTimer(retryWait(se.retryAfter, backoff))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w (giving up retry: %w)", err, ctx.Err())
+		case <-timer.C:
+		}
+		backoff *= 2
+	}
+}
+
+// retryWait returns how long to wait before the next attempt: the server's
+// Retry-After (capped at maxRetryAfter) if given, else backoff.
+func retryWait(retryAfter, backoff time.Duration) time.Duration {
+	if retryAfter > 0 {
+		return min(retryAfter, maxRetryAfter)
+	}
+	return backoff
+}
+
+// doJSONOnce performs a single attempt of doJSON.
+func (c *Client) doJSONOnce(ctx context.Context, method, path string, body []byte, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -419,7 +576,11 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body []byte, o
 		if len(msg) > 500 {
 			msg = msg[:500] + "..."
 		}
-		return fmt.Errorf("%s %s: unexpected status %d: %s", method, path, resp.StatusCode, msg)
+		se := &statusError{method: method, path: path, code: resp.StatusCode, msg: msg}
+		if secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After"))); err == nil && secs > 0 {
+			se.retryAfter = time.Duration(secs) * time.Second
+		}
+		return se
 	}
 
 	if err := json.Unmarshal(respBody, out); err != nil {
