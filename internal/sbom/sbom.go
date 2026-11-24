@@ -280,11 +280,11 @@ func parseOSVPurl(purl, ecosystem string) (name string, ok bool) {
 	rest, subpath, _ := strings.Cut(rest, "#")
 	rest, _, _ = strings.Cut(rest, "?")
 	name, _, found := strings.Cut(rest, "@")
-	if !found || name == "" || strings.HasPrefix(name, ".") {
+	if !found {
 		return "", false
 	}
 	name, err := url.PathUnescape(name)
-	if err != nil {
+	if err != nil || name == "" || strings.HasPrefix(name, ".") {
 		return "", false
 	}
 

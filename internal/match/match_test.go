@@ -197,6 +197,29 @@ func TestEvaluate(t *testing.T) {
 			want:       StatusUnderInvestigation,
 		},
 		{
+			// Regression: a fix in an unknown slot doesn't show the
+			// installed version is fixed; in another slot it is not affected.
+			name:       "newer than a fix in an unknown slot",
+			version:    "2.45.0",
+			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2", Slot: "4"}},
+			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.44.2", Slot: "4"}},
+			want:       StatusUnderInvestigation,
+		},
+		{
+			name:       "newer than a revision-restricted fix in an unknown slot",
+			version:    "2.45.0",
+			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2", Slot: "4"}},
+			unaffected: []glsa.VersionRange{{Op: "rge", Version: "2.44.2", Slot: "4"}},
+			want:       StatusUnderInvestigation,
+		},
+		{
+			name:       "fix in an applicable range outweighs one in an unknown slot",
+			version:    "2.45.0",
+			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2"}},
+			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.44.2", Slot: "4"}, {Op: "rge", Version: "2.44.2"}},
+			want:       StatusFixed,
+		},
+		{
 			name:    "other branch's slot is ruled out when the installed branch is listed",
 			version: "3.12.5",
 			// The 3.11 range would match 3.12.5 if its slot were ignored.

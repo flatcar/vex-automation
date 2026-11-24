@@ -231,22 +231,31 @@ func evaluate(installedVersion string, ap glsa.AffectedPackage) (Status, string)
 		return StatusAffected, ""
 	case vulnerable || maybeVulnerable:
 		return StatusUnderInvestigation, slotNote
-	case maybeFixed || newerThanAFix(installedVersion, ap.Unaffected, branchSlots):
+	}
+	newer, maybeNewer := newerThanAFix(installedVersion, ap.Unaffected, branchSlots)
+	switch {
+	case newer:
 		return StatusFixed, ""
+	case maybeFixed || maybeNewer:
+		// Only a fix restricted to an unknown slot covers this version: it
+		// is fixed if that is the installed slot, and not affected if not.
+		return StatusUnderInvestigation, slotNote
 	default:
 		return StatusNotAffected, ""
 	}
 }
 
 // newerThanAFix reports whether installedVersion is at or above the lower
-// bound of some applicable ge/gt/rge/rgt <unaffected> range. glsa-check
+// bound of some applicable ge/gt/rge/rgt <unaffected> range (sure), or only
+// of such a range whose slot can't be resolved (maybe). glsa-check
 // calls such a version not vulnerable even when no range matches it
 // exactly (e.g. samba 4.22.5 against "rge 4.11.6", which only covers
 // 4.11.6-rN), but it is a release that carries the fix, so VEX should say
 // fixed, not that the vulnerable code was never present.
-func newerThanAFix(installedVersion string, unaffected []glsa.VersionRange, branchSlots bool) bool {
+func newerThanAFix(installedVersion string, unaffected []glsa.VersionRange, branchSlots bool) (sure, maybe bool) {
 	for _, r := range unaffected {
-		if rangeApplies(r.Slot, installedVersion, branchSlots) == slotDoesNotApply {
+		applies := rangeApplies(r.Slot, installedVersion, branchSlots)
+		if applies == slotDoesNotApply {
 			continue
 		}
 		var op string
@@ -259,10 +268,13 @@ func newerThanAFix(installedVersion string, unaffected []glsa.VersionRange, bran
 			continue
 		}
 		if ok, err := portage.Satisfies(installedVersion, op, r.Version); err == nil && ok {
-			return true
+			if applies == slotApplies {
+				return true, false
+			}
+			maybe = true
 		}
 	}
-	return false
+	return false, maybe
 }
 
 // sortFindings orders findings deterministically so that repeated runs over

@@ -39,6 +39,13 @@ const sampleSBOM = `{
       ]
     },
     {
+      "name": "encoded-relative-pkg",
+      "versionInfo": "v1.0.0",
+      "externalRefs": [
+        {"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:golang/%2E%2E/api@v1.0.0"}
+      ]
+    },
+    {
       "name": "malformed-ebuild",
       "versionInfo": "1.0",
       "externalRefs": [
@@ -147,11 +154,13 @@ func TestLoad(t *testing.T) {
 
 	wantSkipped := map[string]string{
 		"devel-internal-pkg": "purl does not name a module that OSV.dev can be queried about",
-		"malformed-ebuild":   "malformed ebuild purl",
-		"no-version-golang":  "purl does not name a module that OSV.dev can be queried about",
-		"other-ref-type":     "no purl",
-		"linux-kernel":       "unsupported purl type",
-		"no-refs":            "no purl",
+		// Regression: the relative name is only visible once decoded.
+		"encoded-relative-pkg": "purl does not name a module that OSV.dev can be queried about",
+		"malformed-ebuild":     "malformed ebuild purl",
+		"no-version-golang":    "purl does not name a module that OSV.dev can be queried about",
+		"other-ref-type":       "no purl",
+		"linux-kernel":         "unsupported purl type",
+		"no-refs":              "no purl",
 	}
 	if len(doc.Skipped) != len(wantSkipped) {
 		t.Fatalf("got %d skipped packages, want %d: %+v", len(doc.Skipped), len(wantSkipped), doc.Skipped)

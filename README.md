@@ -120,7 +120,8 @@ Each CVE gets one statement. Its status follows `glsa-check`: a version in an
 `rge 4.11.6`) and `not_affected` (justification `vulnerable_code_not_present`) otherwise.
 If the installed version can't be evaluated (unparseable version, or a range restricted to
 a SLOT that can't be inferred, since the SBOM doesn't record slots) the status is `under_investigation` with
-the reason in `status_notes`. A numeric slot such as `3.12` is inferred to be the installed
+the reason in `status_notes`. This includes a version that only such a range shows to be fixed,
+because in another slot it would be `not_affected`. A numeric slot such as `3.12` is inferred to be the installed
 version's branch only when the advisory lists a slot matching that branch. When several packages disagree about one CVE, the most severe
 status wins (`affected` > `under_investigation` > `fixed` > `not_affected`). A GLSA that
 references no CVE is reported as `GLSA-<id>`.
