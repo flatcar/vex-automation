@@ -92,8 +92,12 @@ in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step):
 ```
 
 ```
-Cloned GLSA mirror at ./glsa-data (3817 advisories)
+Cloning https://anongit.gentoo.org/git/data/glsa.git into ./glsa-data...
+Cloned GLSA mirror at ./glsa-data (3870 advisories, bffa9cc50d60)
 ```
+
+Each step is printed to stderr as it starts (plus git's progress meter on a terminal), and
+the result line goes to stdout. Gentoo's server can take a few minutes to answer.
 
 Running the same command again later updates the existing mirror instead of re-cloning:
 
@@ -102,8 +106,11 @@ Running the same command again later updates the existing mirror instead of re-c
 ```
 
 ```
-Updated GLSA mirror at ./glsa-data (3820 advisories)
+Fetching updates from https://anongit.gentoo.org/git/data/glsa.git into ./glsa-data...
+Updated GLSA mirror at ./glsa-data (3873 advisories, bffa9cc50d60 -> 5d1e0c2a9f47)
 ```
+
+If nothing changed upstream, it says `GLSA mirror at ./glsa-data is already up to date`.
 
 Useful flags:
 

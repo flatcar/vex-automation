@@ -1,6 +1,7 @@
 package glsasync
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -72,7 +73,7 @@ func TestSyncClonesThenUpdates(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
 	// First call: dest doesn't exist yet, should clone.
-	res, err := Sync(context.Background(), dest, upstream)
+	res, err := Sync(context.Background(), dest, upstream, nil)
 	if err != nil {
 		t.Fatalf("Sync (clone): %v", err)
 	}
@@ -90,7 +91,7 @@ func TestSyncClonesThenUpdates(t *testing.T) {
 	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
 
 	// Second call: dest already exists, should update in place.
-	res, err = Sync(context.Background(), dest, upstream)
+	res, err = Sync(context.Background(), dest, upstream, nil)
 	if err != nil {
 		t.Fatalf("Sync (update): %v", err)
 	}
@@ -117,7 +118,7 @@ func TestSyncSwitchesRemoteOnRepoChange(t *testing.T) {
 	upstreamA := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
-	res, err := Sync(context.Background(), dest, upstreamA)
+	res, err := Sync(context.Background(), dest, upstreamA, nil)
 	if err != nil {
 		t.Fatalf("Sync (clone from A): %v", err)
 	}
@@ -130,7 +131,7 @@ func TestSyncSwitchesRemoteOnRepoChange(t *testing.T) {
 	addUpstreamFile(t, upstreamB, "glsa-202602-01.xml")
 	addUpstreamFile(t, upstreamB, "glsa-202602-02.xml")
 
-	res, err = Sync(context.Background(), dest, upstreamB)
+	res, err = Sync(context.Background(), dest, upstreamB, nil)
 	if err != nil {
 		t.Fatalf("Sync (switch to B): %v", err)
 	}
@@ -148,10 +149,10 @@ func TestSyncSwitchesRemoteOnRepoChange(t *testing.T) {
 }
 
 func TestSyncRejectsEmptyDest(t *testing.T) {
-	if _, err := Sync(context.Background(), "", "https://example.invalid/glsa.git"); err == nil {
+	if _, err := Sync(context.Background(), "", "https://example.invalid/glsa.git", nil); err == nil {
 		t.Fatal("expected an error for an empty dest, got nil")
 	}
-	if _, err := Sync(context.Background(), "   ", "https://example.invalid/glsa.git"); err == nil {
+	if _, err := Sync(context.Background(), "   ", "https://example.invalid/glsa.git", nil); err == nil {
 		t.Fatal("expected an error for a whitespace-only dest, got nil")
 	}
 }
@@ -167,7 +168,7 @@ func TestSyncFailsFastOnBadRepo(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	badRepo := filepath.Join(t.TempDir(), "does-not-exist.git")
 
-	_, err := Sync(context.Background(), dest, badRepo)
+	_, err := Sync(context.Background(), dest, badRepo, nil)
 	if err == nil {
 		t.Fatal("expected an error cloning a nonexistent repo, got nil")
 	}
@@ -194,7 +195,7 @@ func TestSyncRespectsContextTimeout(t *testing.T) {
 	// Ensure the deadline has definitely passed before Sync even checks it.
 	<-ctx.Done()
 
-	if _, err := Sync(ctx, dest, upstream); err == nil {
+	if _, err := Sync(ctx, dest, upstream, nil); err == nil {
 		t.Fatal("expected an error from an already-expired context, got nil")
 	}
 }
@@ -215,7 +216,7 @@ func TestSyncDefaultsRepoURL(t *testing.T) {
 	defer cancel()
 	<-ctx.Done()
 
-	_, err := Sync(ctx, dest, "")
+	_, err := Sync(ctx, dest, "", nil)
 	if err == nil {
 		t.Fatal("expected an error from an already-expired context, got nil")
 	}
@@ -229,7 +230,7 @@ func TestSyncGitNotFound(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
-	_, err := Sync(context.Background(), dest, "https://example.invalid/glsa.git")
+	_, err := Sync(context.Background(), dest, "https://example.invalid/glsa.git", nil)
 	if err == nil {
 		t.Fatal("expected an error when git is not in PATH, got nil")
 	}
@@ -249,7 +250,7 @@ func TestSyncStatErrorNotNotExist(t *testing.T) {
 	}
 	dest := filepath.Join(blocker, "child") // "child" can never exist: its parent is a file
 
-	if _, err := Sync(context.Background(), dest, "https://example.invalid/glsa.git"); err == nil {
+	if _, err := Sync(context.Background(), dest, "https://example.invalid/glsa.git", nil); err == nil {
 		t.Fatal("expected an error when a dest path component is a file, got nil")
 	}
 }
@@ -265,7 +266,7 @@ func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
-	if _, err := Sync(context.Background(), dest, upstream); err != nil {
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("initial Sync (clone): %v", err)
 	}
 
@@ -274,7 +275,7 @@ func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
 		t.Fatalf("corrupting HEAD: %v", err)
 	}
 
-	if _, err := Sync(context.Background(), dest, upstream); err == nil {
+	if _, err := Sync(context.Background(), dest, upstream, nil); err == nil {
 		t.Fatal("expected an error updating a corrupted checkout, got nil")
 	}
 }
@@ -291,12 +292,53 @@ func TestSyncRefusesNonGitDirectory(t *testing.T) {
 		t.Fatalf("seeding unrelated file: %v", err)
 	}
 
-	if _, err := Sync(context.Background(), dest, upstream); err == nil {
+	if _, err := Sync(context.Background(), dest, upstream, nil); err == nil {
 		t.Fatalf("expected Sync to refuse a pre-existing non-git directory, got nil error")
 	}
 
 	// The unrelated file must be untouched.
 	if _, err := os.Stat(filepath.Join(dest, "unrelated.txt")); err != nil {
 		t.Errorf("unrelated file should have been left alone: %v", err)
+	}
+}
+
+func TestSyncReportsStepsAndCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+
+	var progress bytes.Buffer
+	first, err := Sync(context.Background(), dest, upstream, &progress)
+	if err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if want := "Cloning " + upstream + " into " + dest; !strings.Contains(progress.String(), want) {
+		t.Errorf("progress = %q, want it to contain %q", progress.String(), want)
+	}
+	if first.OldCommit != "" || first.NewCommit == "" {
+		t.Errorf("clone commits = %q -> %q, want \"\" -> a commit", first.OldCommit, first.NewCommit)
+	}
+
+	progress.Reset()
+	same, err := Sync(context.Background(), dest, upstream, &progress)
+	if err != nil {
+		t.Fatalf("Sync (no change): %v", err)
+	}
+	if want := "Fetching updates from " + upstream; !strings.Contains(progress.String(), want) {
+		t.Errorf("progress = %q, want it to contain %q", progress.String(), want)
+	}
+	if same.OldCommit != first.NewCommit || same.NewCommit != first.NewCommit {
+		t.Errorf("unchanged commits = %q -> %q, want %q twice", same.OldCommit, same.NewCommit, first.NewCommit)
+	}
+
+	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
+	updated, err := Sync(context.Background(), dest, upstream, nil)
+	if err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if updated.OldCommit != first.NewCommit || updated.NewCommit == first.NewCommit {
+		t.Errorf("updated commits = %q -> %q, want %q -> a new commit", updated.OldCommit, updated.NewCommit, first.NewCommit)
 	}
 }
