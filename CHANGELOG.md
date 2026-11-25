@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/flatcar/vex-automation/compare/v2.0.0...v2.1.0) (2026-11-25)
+
+
+### Features
+
+* Add SBOM CVE diff generation ([#14](https://github.com/flatcar/vex-automation/issues/14)) ([f025007](https://github.com/flatcar/vex-automation/commit/f0250074ddf75d79ebb7077b92c27cdd82296be2))
+
+
+### Bug Fixes
+
+* **ci:** make releases publish goreleaser binaries ([#13](https://github.com/flatcar/vex-automation/issues/13)) ([9c914aa](https://github.com/flatcar/vex-automation/commit/9c914aa93c54e9151f491058bcc49a59cfca0e74))
+
 ## [2.0.0](https://github.com/flatcar/vex-automation/compare/flatcar-vex-v1.0.0...flatcar-vex-v2.0.0) (2026-11-24)
 
 
