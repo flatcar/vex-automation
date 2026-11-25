@@ -35,6 +35,23 @@ This repository is maintained by the Flatcar community and contributors. Develop
 
 ## Getting Started
 
+### Installing a release
+
+Each [GitHub release](https://github.com/flatcar/vex-automation/releases) ships packages
+for amd64 and arm64 that install `/usr/bin/flatcar-vex`, plus `.tar.gz`/`.zip` archives
+for Linux, macOS and Windows:
+
+```console
+sudo apt install ./flatcar-vex_2.1.0_amd64.deb             # Debian/Ubuntu
+sudo dnf install ./flatcar-vex-2.1.0-1.x86_64.rpm           # Fedora/RHEL
+sudo pacman -U ./flatcar-vex-2.1.0-1-x86_64.pkg.tar.zst     # Arch
+```
+
+On other distributions (e.g. Gentoo), unpack the `linux` archive and put `flatcar-vex`
+on your `PATH`. The binary is static and has no runtime dependencies.
+
+### Building from source
+
 This project is written in Go (see `go.mod` for the required version) and builds the
 `flatcar-vex` CLI.
 

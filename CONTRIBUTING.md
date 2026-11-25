@@ -60,7 +60,7 @@ merge settings ever look "wrong" compared to other Flatcar repos, this is why.
    approve them from the PR before merging.
 4. Once merged, release-please tags the release as plain `vX.Y.Z` and publishes a GitHub
    Release with generated notes, and, in the same workflow run, builds and attaches release
-   binaries via `goreleaser` (see `.goreleaser.yaml`). Tags carry no `flatcar-vex-`
+   archives and `.deb`/`.rpm`/Arch packages via `goreleaser` (see `.goreleaser.yaml`). Tags carry no `flatcar-vex-`
    component prefix (`include-component-in-tag: false` in `release-please-config.json`)
    because goreleaser only accepts semver tags. No extra secrets or personal access tokens
    are required: goreleaser runs in the *same* workflow run as release-please rather than
