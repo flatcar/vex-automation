@@ -1,7 +1,11 @@
 // Package cli implements the flatcar-vex CLI commands.
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"log/slog"
+
+	"github.com/spf13/cobra"
+)
 
 // Version is set at build time via -ldflags.
 var Version = "dev"
@@ -20,7 +24,8 @@ func NewRootCmd() *cobra.Command {
 Container Linux releases, by matching release SBOMs against the Gentoo GLSA
 corpus (ebuild packages, using only data Flatcar and Gentoo already publish)
 and OSV.dev's public API (golang/cargo packages; requires live network
-access, disable with "generate --osv=false").
+access, disable with "generate --osv=false"). "diff" compares two releases
+and drafts the "Security fixes" section of the release notes.
 
 See docs/plan.md in this repository for the full design and current status.`,
 		Version: Version,
@@ -30,7 +35,18 @@ See docs/plan.md in this repository for the full design and current status.`,
 		SilenceErrors: true,
 	}
 
+	var verbose bool
+	cmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "also log informational messages (default: warnings and errors only)")
+	cmd.PersistentPreRun = func(*cobra.Command, []string) {
+		level := slog.LevelWarn
+		if verbose {
+			level = slog.LevelInfo
+		}
+		slog.SetLogLoggerLevel(level)
+	}
+
 	cmd.AddCommand(newGenerateCmd())
+	cmd.AddCommand(newDiffCmd())
 	cmd.AddCommand(newSyncGLSACmd())
 
 	return cmd

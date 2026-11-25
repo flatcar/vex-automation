@@ -39,8 +39,9 @@ type Package struct {
 	Name string
 	// Version is the installed package version, e.g. "255.4-r2" or
 	// "v1.57.0". For the golang "stdlib" and "toolchain" pseudo-modules,
-	// Syft's "go" prefix is removed ("go1.25.3" becomes "1.25.3"), which is
-	// the form OSV.dev expects.
+	// Syft's "go" prefix and any GOEXPERIMENT suffix are removed
+	// ("go1.26.10-X:nodwarf5" becomes "1.26.10"), which is the form OSV.dev
+	// expects.
 	Version string
 	// PURL is the original package URL as it appeared in the SBOM, e.g.
 	// "pkg:ebuild/sys-apps/systemd@255.4-r2". Kept verbatim (including
@@ -117,6 +118,13 @@ type SkippedPackage struct {
 	// PURL is the package's first purl, or empty if it has none.
 	PURL   string
 	Reason string
+	// Ecosystem and Module identify a golang/cargo module that was skipped
+	// only because its version can't be queried (e.g. "(devel)"), in the
+	// same normalized form as Package.Category and Package.Name, so callers
+	// can tell it is another, unchecked copy of a queried module. Both are
+	// empty for other skipped packages.
+	Ecosystem string
+	Module    string
 }
 
 // Load reads an SPDX JSON SBOM from path and returns every package it
@@ -166,7 +174,8 @@ func Load(path string) (Document, error) {
 			case !ok:
 				skip(purl, "purl does not name a module that OSV.dev can be queried about")
 			case !isQueryableVersion(sp.VersionInfo):
-				skip(purl, "version is not queryable")
+				result.Skipped = append(result.Skipped, SkippedPackage{Name: sp.Name, Version: sp.VersionInfo, PURL: purl,
+					Reason: "version is not queryable", Ecosystem: ecosystem, Module: name})
 			default:
 				result.OSVPackages = append(result.OSVPackages, Package{
 					Category: ecosystem,
@@ -205,10 +214,16 @@ func firstPurl(sp spdxPackage) string {
 // osvVersion normalizes an SPDX versionInfo for OSV.dev: Syft reports the
 // Go standard library and toolchain as "go1.25.3", but OSV.dev's Go
 // ecosystem lists them as "1.25.3", and the prefixed form matches every
-// historical stdlib vulnerability.
+// historical stdlib vulnerability. Syft also keeps the GOEXPERIMENT suffix
+// of runtime.Version() (e.g. "go1.26.10-X:nodwarf5"), which OSV.dev would
+// read as a pre-release of 1.26.10 and so as still vulnerable to whatever
+// 1.26.10 fixed; it is dropped too.
 func osvVersion(ecosystem, name, version string) string {
 	if ecosystem == "golang" && (name == "stdlib" || name == "toolchain") {
-		return strings.TrimPrefix(version, "go")
+		version = strings.TrimPrefix(version, "go")
+		if i := strings.Index(version, "X:"); i > 0 && (version[i-1] == '-' || version[i-1] == ' ') {
+			version = version[:i-1]
+		}
 	}
 	return version
 }

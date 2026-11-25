@@ -22,6 +22,12 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Cache real-release test data
+        uses: actions/cache@v4
+        with:
+          path: .local/test-cache
+          key: release-test-data-${{ hashFiles('internal/cli/testdata/releases.json') }}
+
       - name: Run tests
         run: make test
 

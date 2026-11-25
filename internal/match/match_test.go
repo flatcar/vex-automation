@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -412,6 +413,74 @@ func TestRunOSVReportsEveryCVEAlias(t *testing.T) {
 	}
 }
 
+// A GHSA and a GO record without a CVE that alias each other describe one
+// vulnerability and must be reported once (as seen with grpc's
+// GHSA-hrxh-6v49-42gf / GO-2026-6061).
+func TestRunOSVReportsAliasedRecordsWithoutCVEOnce(t *testing.T) {
+	// The alias may be recorded on either side only.
+	for name, aliases := range map[string]map[string][]string{
+		"GO lists GHSA": {"GO-2026-1": {"GHSA-aaaa"}},
+		"GHSA lists GO": {"GHSA-aaaa": {"GO-2026-1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pkgs := []sbom.Package{
+				{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+			}
+			client := newOSVTestClient(t,
+				map[string][]string{"pkg:golang/example.com/mod@v1.0.0": {"GO-2026-1", "GHSA-aaaa", "GO-2026-2"}},
+				aliases,
+			)
+
+			findings, err := RunOSV(context.Background(), pkgs, client)
+			if err != nil {
+				t.Fatalf("RunOSV returned error: %v", err)
+			}
+			var got []string
+			for _, f := range findings {
+				got = append(got, f.CVE)
+			}
+			if want := []string{"GHSA-aaaa", "GO-2026-2"}; !slices.Equal(got, want) {
+				t.Fatalf("findings = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// Aliased CVE-less records get one ID across all queried packages: if one
+// version returns both records and another only one of them, both must
+// still report the same ID, or a diff would see a fix plus a new
+// vulnerability. RefID keeps the record actually returned.
+func TestRunOSVCanonicalizesAliasedRecordsAcrossPackages(t *testing.T) {
+	for name, aliases := range map[string]map[string][]string{
+		"GO lists GHSA": {"GO-2026-1": {"GHSA-aaaa"}},
+		"GHSA lists GO": {"GHSA-aaaa": {"GO-2026-1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pkgs := []sbom.Package{
+				{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+				{Category: "golang", Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
+			}
+			client := newOSVTestClient(t, map[string][]string{
+				"pkg:golang/example.com/mod@v1.0.0": {"GO-2026-1", "GHSA-aaaa"},
+				"pkg:golang/example.com/mod@v1.1.0": {"GO-2026-1"},
+			}, aliases)
+
+			findings, err := RunOSV(context.Background(), pkgs, client)
+			if err != nil {
+				t.Fatalf("RunOSV returned error: %v", err)
+			}
+			var got []string
+			for _, f := range findings {
+				got = append(got, f.Package.Version+" "+f.CVE+" "+f.RefID)
+			}
+			want := []string{"v1.0.0 GHSA-aaaa GHSA-aaaa", "v1.1.0 GHSA-aaaa GO-2026-1"}
+			if !slices.Equal(got, want) {
+				t.Fatalf("findings = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 // The query must use the module path and version as normalized by
 // sbom.Load (see sbom.TestLoad for the subpath and stdlib cases), keep its
 // case (OSV.dev lowercases purl queries, so a mixed-case module path like
@@ -493,5 +562,85 @@ func TestSortFindingsOrdersBySourceThenRefIDForIdenticalCVEAndPackage(t *testing
 		if findings[i].Source != w.source || findings[i].RefID != w.refID {
 			t.Errorf("findings[%d] = {Source: %q, RefID: %q}, want {%q, %q}", i, findings[i].Source, findings[i].RefID, w.source, w.refID)
 		}
+	}
+}
+
+func TestApplyCurlAdvisories(t *testing.T) {
+	curl := func(version string) sbom.Package {
+		return sbom.Package{Category: "net-misc", Name: "curl", Version: version}
+	}
+	glsaFinding := func(cve string, pkg sbom.Package) Finding {
+		return Finding{CVE: cve, Source: SourceGLSA, RefID: "202611-07", Package: pkg, Status: StatusAffected}
+	}
+	findings := []Finding{
+		glsaFinding("CVE-2024-11053", curl("8.21.0-r1")), // fixed upstream in 8.11.1
+		glsaFinding("CVE-2026-13608", curl("8.21.0-r1")), // 8.21.0 is listed upstream
+		glsaFinding("CVE-2026-0001", curl("8.21.0-r1")),  // no upstream record
+		glsaFinding("CVE-2024-11053", sbom.Package{Category: "net-misc", Name: "wget", Version: "1.0"}),
+		{CVE: "CVE-2024-11053", Source: SourceOSV, RefID: "X", Package: curl("8.21.0"), Status: StatusAffected},
+	}
+
+	if got, want := strings.Join(CurlAdvisoryIDs(findings), ","), "CURL-CVE-2024-11053,CURL-CVE-2026-0001,CURL-CVE-2026-13608"; got != want {
+		t.Errorf("CurlAdvisoryIDs = %s, want %s", got, want)
+	}
+
+	advisories := map[string]osv.Vulnerability{
+		"CURL-CVE-2024-11053": {ID: "CURL-CVE-2024-11053", AffectedVersions: []string{"8.11.0", "8.10.1"}},
+		"CURL-CVE-2026-13608": {ID: "CURL-CVE-2026-13608", AffectedVersions: []string{"8.22.0", "8.21.0"}},
+	}
+	got := ApplyCurlAdvisories(findings, advisories)
+
+	want := []Status{StatusNotAffected, StatusAffected, StatusAffected, StatusAffected, StatusAffected}
+	for i, f := range got {
+		if f.Status != want[i] {
+			t.Errorf("finding %d (%s %s): status %s, want %s", i, f.CVE, f.Package.CategoryName(), f.Status, want[i])
+		}
+	}
+	if !strings.Contains(got[0].Note, "CURL-CVE-2024-11053") {
+		t.Errorf("note %q does not name the curl advisory", got[0].Note)
+	}
+	if findings[0].Status != StatusAffected {
+		t.Error("input findings were modified")
+	}
+}
+
+func TestApplyCurlAdvisoriesKeepsUnmappableVersions(t *testing.T) {
+	advisories := map[string]osv.Vulnerability{
+		"CURL-CVE-2026-13608": {ID: "CURL-CVE-2026-13608", AffectedVersions: []string{"8.21.0"}},
+	}
+	for _, version := range []string{"8.21.0_p1-r1", "8.21.0_rc1", "8.21.0_pre20260101", "9999"} {
+		f := Finding{CVE: "CVE-2026-13608", Source: SourceGLSA, RefID: "202611-07", Status: StatusAffected,
+			Package: sbom.Package{Category: "net-misc", Name: "curl", Version: version}}
+		if got := ApplyCurlAdvisories([]Finding{f}, advisories)[0].Status; got != StatusAffected {
+			t.Errorf("version %s: status %s, want %s", version, got, StatusAffected)
+		}
+	}
+}
+
+func TestRunOSVPropagatesCVEsAcrossAliasGroups(t *testing.T) {
+	pkgs := []sbom.Package{
+		{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		{Category: "golang", Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
+	}
+	client := newOSVTestClient(t, map[string][]string{
+		"pkg:golang/example.com/mod@v1.0.0": {"GHSA-aaaa"},
+		"pkg:golang/example.com/mod@v1.1.0": {"GO-2026-1"},
+	}, map[string][]string{
+		"GHSA-aaaa": {"GO-2026-1"},
+		"GO-2026-1": {"GHSA-aaaa", "CVE-2026-1"},
+	})
+
+	findings, err := RunOSV(context.Background(), pkgs, client)
+	if err != nil {
+		t.Fatalf("RunOSV returned error: %v", err)
+	}
+	var got []string
+	for _, f := range findings {
+		got = append(got, f.Package.Version+" "+f.CVE+" "+f.RefID)
+	}
+	slices.Sort(got)
+	want := []string{"v1.0.0 CVE-2026-1 GHSA-aaaa", "v1.1.0 CVE-2026-1 GO-2026-1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("findings = %v, want %v", got, want)
 	}
 }

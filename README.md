@@ -163,7 +163,10 @@ same VEX document. Go purl subpaths are part of the module path
 `github.com/golang-jwt/jwt/v4`), and the `go` prefix of Syft's `stdlib` version is dropped.
 Packages are queried by OSV ecosystem and name rather than by purl, because OSV.dev lowercases
 golang purls and would miss mixed-case module paths such as `github.com/Azure/...`.
-Every CVE alias of an OSV.dev record gets its own statement.
+Every CVE alias of an OSV.dev record gets its own statement. Records linked by aliases
+(e.g. a GHSA and its GO record) are treated as one vulnerability across all queried
+packages: each is reported under every CVE of the group, or under the group's smallest
+ID when none has a CVE.
 
 Unlike GLSA, this requires live network access and there is no local corpus to sync
 first, since OSV.dev's API is queried directly with each package's exact version (see
@@ -178,6 +181,50 @@ Useful flags:
 - `--osv-base-url` – override the OSV.dev API base URL, e.g. for testing or a private mirror
   (default `https://api.osv.dev`).
 - `--osv-timeout` – cap how long OSV.dev matching is allowed to run (default `5m`).
+
+The `stdlib` version also loses any GOEXPERIMENT suffix Syft keeps from `runtime.Version()`
+(`go1.26.10-X:nodwarf5` is queried as `1.26.10`), since OSV.dev would read it as a
+pre-release and report vulnerabilities that 1.26.10 already fixed.
+
+#### 5. Diffing two releases
+
+`diff` matches two SBOMs (usually the previous and the new release of one channel) against
+the same GLSA corpus and OSV.dev, and reports what changed per CVE and package:
+
+```console
+./bin/flatcar-vex diff --old-sbom old_sbom.json --new-sbom new_sbom.json \
+  --glsa-dir ./glsa-data --format changelog
+```
+
+Each CVE and package pair lands in one bucket: `fixed` (affected before, fixed now),
+`removed` (affected before, package gone), `introduced` (affected only now),
+`still_affected` (affected on both sides) or `review` (either side under investigation, or
+shipping a copy whose version can't be checked, such as a `(devel)` Go module, and not
+otherwise proven affected).
+`--format json` (the default) writes all buckets; `--format changelog` writes a
+"Security fixes" draft in the release notes style from the `fixed` bucket only. The draft
+is a starting point for a human, not a final text: GLSA and OSV.dev do not know about every
+CVE the release notes list, and kernel, podman and incus CVEs come from another pipeline.
+`--osv`, `--osv-base-url`, `--osv-timeout`, `--allow-glsa-errors` and `-o` work as in
+`generate`; both sides are sent to OSV.dev in a single query, and `--osv-timeout` bounds all
+OSV.dev work of the run, including the curl recheck below.
+
+Gentoo's curl GLSAs list years of CVEs under one "older than the latest release" range, so
+on their own they would report CVEs as fixed that the previous release had fixed long ago.
+With OSV.dev enabled, `diff` rechecks every curl GLSA finding against curl's own advisory
+on OSV.dev (`CURL-CVE-...`, which lists every affected curl release) and drops it when the
+installed version isn't listed. Versions that don't map to an upstream release (Gentoo
+patchset, prerelease or live versions such as `_p1`, `_rc1` or `9999`) keep the GLSA status.
+
+Only warnings and errors are logged by default; add `-v` (`--verbose`, available on every
+command) to also see informational messages, such as which SBOM packages no source covers.
+
+`TestDiffRealReleases` checks `diff` against the hand-written release notes of a few
+real release pairs listed in `internal/cli/testdata/releases.json`, which also lists the
+CVEs it is known to miss and why. On the first run it downloads the SBOMs (about 110 MB)
+and clones the GLSA repository into `.local/test-cache` (set `FLATCAR_VEX_TEST_CACHE`
+to use another directory), and it queries OSV.dev. `go test -short` and `make test-quick`
+skip it.
 
 #### Putting it together
 

@@ -496,7 +496,7 @@ func TestFetchVulnerabilitiesEmptyIDs(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	got, err := c.fetchVulnerabilities(context.Background(), nil)
+	got, err := c.fetchVulnerabilities(context.Background(), nil, false)
 	if err != nil {
 		t.Fatalf("fetchVulnerabilities returned error: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestFetchVulnerabilitiesRunsConcurrentlyWithinLimit(t *testing.T) {
 		ids[i] = fmt.Sprintf("GHSA-%d", i)
 	}
 
-	got, err := c.fetchVulnerabilities(context.Background(), ids)
+	got, err := c.fetchVulnerabilities(context.Background(), ids, false)
 	if err != nil {
 		t.Fatalf("fetchVulnerabilities returned error: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestFetchVulnerabilitiesCancelsRemainingOnFirstError(t *testing.T) {
 		ids[i] = fmt.Sprintf("GHSA-%d", i)
 	}
 
-	_, err := c.fetchVulnerabilities(context.Background(), ids)
+	_, err := c.fetchVulnerabilities(context.Background(), ids, false)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -621,7 +621,7 @@ func TestFetchVulnerabilitiesFailsWhenParentContextIsCanceled(t *testing.T) {
 	})
 	c.VulnFetchConcurrency = 1
 
-	if got, err := c.fetchVulnerabilities(ctx, []string{"GO-1", "GO-2", "GO-3"}); err == nil {
+	if got, err := c.fetchVulnerabilities(ctx, []string{"GO-1", "GO-2", "GO-3"}, false); err == nil {
 		t.Fatalf("got %d of 3 vulnerabilities and no error, want a cancellation error", len(got))
 	}
 }
@@ -653,5 +653,38 @@ func TestRetryWaitCapsRetryAfter(t *testing.T) {
 		if got := retryWait(c.retryAfter, c.backoff); got != c.want {
 			t.Errorf("retryWait(%v, %v) = %v, want %v", c.retryAfter, c.backoff, got, c.want)
 		}
+	}
+}
+
+func TestGetSkipsMissingRecordsAndKeepsAffectedVersions(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/vulns/CURL-CVE-2024-11053":
+			_, _ = fmt.Fprint(w, `{"id": "CURL-CVE-2024-11053", "aliases": ["CVE-2024-11053"],
+				"affected": [{"versions": ["8.11.0", "8.10.1"]}, {"versions": ["7.76.0"]}]}`)
+		default:
+			http.Error(w, `{"code": 5, "message": "Bug not found."}`, http.StatusNotFound)
+		}
+	})
+
+	got, err := c.Get(context.Background(), []string{"CURL-CVE-2024-11053", "CURL-CVE-2099-0001"})
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Get = %+v, want only the existing record", got)
+	}
+	v := got["CURL-CVE-2024-11053"]
+	if want := []string{"8.11.0", "8.10.1", "7.76.0"}; strings.Join(v.AffectedVersions, ",") != strings.Join(want, ",") {
+		t.Errorf("AffectedVersions = %v, want %v", v.AffectedVersions, want)
+	}
+}
+
+func TestGetPropagatesOtherErrors(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	})
+	if _, err := c.Get(context.Background(), []string{"CURL-CVE-2024-11053"}); err == nil {
+		t.Fatal("Get succeeded on a 403")
 	}
 }

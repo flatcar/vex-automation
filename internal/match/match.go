@@ -8,6 +8,7 @@ import (
 	"context"
 	"log/slog"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -46,6 +47,27 @@ const (
 	// be determined from the SBOM).
 	StatusUnderInvestigation Status = "under_investigation"
 )
+
+// StatusPrecedence orders statuses from most to least severe. When several
+// findings disagree about the same vulnerability (e.g. one copy of a
+// package fixed, another still affected), the most severe status wins.
+var StatusPrecedence = []Status{
+	StatusAffected,
+	StatusUnderInvestigation,
+	StatusFixed,
+	StatusNotAffected,
+}
+
+// Severity returns s's rank in StatusPrecedence, where 0 is the most
+// severe, or len(StatusPrecedence) for an unknown status.
+func Severity(s Status) int {
+	for i, p := range StatusPrecedence {
+		if p == s {
+			return i
+		}
+	}
+	return len(StatusPrecedence)
+}
 
 // Finding is the result of matching a single installed package against a
 // single vulnerability referenced by one of the supported sources.
@@ -108,7 +130,7 @@ func Run(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
 			for _, pkg := range installed {
 				status, note := evaluatePackage(ap.CategoryName, pkg.Version, ap)
 				if status == StatusUnderInvestigation {
-					slog.Warn("cannot evaluate GLSA ranges, reporting as under investigation",
+					slog.Info("cannot evaluate GLSA ranges, reporting as under investigation",
 						"package", pkg.CategoryName(), "version", pkg.Version, "glsa", g.ID, "reason", note)
 				}
 
@@ -330,21 +352,88 @@ func RunOSV(ctx context.Context, pkgs []sbom.Package, client *osv.Client) ([]Fin
 		return nil, err
 	}
 
+	groupIDs := aliasGroupIDs(results)
 	var findings []Finding
 	for i, pkg := range pkgs {
+		// One finding per group ID and package; the RefID is the smallest
+		// record of the group returned for this package.
+		refs := map[string]string{}
 		for _, v := range results[queryPURLs[i]] {
-			for _, id := range v.CVEs() {
-				findings = append(findings, Finding{
-					CVE:     id,
-					Source:  SourceOSV,
-					RefID:   v.ID,
-					Package: pkg,
-					Status:  StatusAffected,
-				})
+			for _, id := range groupIDs[v.ID] {
+				if ref, seen := refs[id]; !seen || v.ID < ref {
+					refs[id] = v.ID
+				}
 			}
+		}
+		for id, ref := range refs {
+			findings = append(findings, Finding{CVE: id, Source: SourceOSV, RefID: ref, Package: pkg, Status: StatusAffected})
 		}
 	}
 
 	sortFindings(findings)
 	return findings, nil
+}
+
+// aliasGroupIDs groups every record returned for any package by its
+// aliases (recorded in either direction) and maps each record ID to the
+// identifiers its findings are reported under: all CVEs of the group, or,
+// when no member has a CVE, the smallest record ID of the group. Grouping
+// over the whole result, not per package, keeps the reported IDs stable
+// when one version returns several records of a group and another version
+// only one of them (as seen with grpc's GHSA-hrxh-6v49-42gf /
+// GO-2026-6061), even when only some records list the group's CVE.
+func aliasGroupIDs(results map[string][]osv.Vulnerability) map[string][]string {
+	parent := map[string]string{}
+	var find func(string) string
+	find = func(id string) string {
+		if _, ok := parent[id]; !ok {
+			parent[id] = id
+		}
+		if parent[id] != id {
+			parent[id] = find(parent[id])
+		}
+		return parent[id]
+	}
+	union := func(a, b string) {
+		ra, rb := find(a), find(b)
+		if ra < rb {
+			parent[rb] = ra
+		} else {
+			parent[ra] = rb
+		}
+	}
+	records := map[string]osv.Vulnerability{}
+	for _, vulns := range results {
+		for _, v := range vulns {
+			records[v.ID] = v
+			find(v.ID)
+			for _, a := range v.Aliases {
+				union(v.ID, a)
+			}
+		}
+	}
+
+	cves := map[string][]string{}
+	smallest := map[string]string{}
+	for id, v := range records {
+		root := find(id)
+		for _, a := range append([]string{v.ID}, v.Aliases...) {
+			if strings.HasPrefix(a, "CVE-") {
+				cves[root] = append(cves[root], a)
+			}
+		}
+		if s, ok := smallest[root]; !ok || id < s {
+			smallest[root] = id
+		}
+	}
+	groupIDs := make(map[string][]string, len(records))
+	for id := range records {
+		root := find(id)
+		ids := slices.Compact(slices.Sorted(slices.Values(cves[root])))
+		if len(ids) == 0 {
+			ids = []string{smallest[root]}
+		}
+		groupIDs[id] = ids
+	}
+	return groupIDs
 }
