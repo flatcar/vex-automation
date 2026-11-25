@@ -53,26 +53,23 @@ merge settings ever look "wrong" compared to other Flatcar repos, this is why.
    [`.github/workflows/release-please.yml`](./.github/workflows/release-please.yml).
 2. release-please maintains a standing "Release PR" that accumulates the changelog and
    next version number as qualifying PRs merge.
-3. **This Release PR merges itself automatically — no human review or manual merge click
-   is required.** The workflow enables GitHub's native auto-merge on it as soon as it's
-   opened/updated. Auto-merge still waits for this repo's normal required status checks
-   (lint, tests, CodeQL, etc.) to pass on the Release PR's branch before merging; it only
-   skips the required-approving-review rule, since this PR is never meant to be
-   human-reviewed (there's nothing to review — its content is entirely generated from
-   already-reviewed, already-merged commits). This mirrors how `security-triage` runs
-   `semantic-release` fully automatically via a bypassed bot identity.
-4. Once merged, release-please tags the release and publishes a GitHub Release with
-   generated notes, and, in the same workflow run, builds and attaches release binaries via
-   `goreleaser` (see `.goreleaser.yaml`). No extra secrets or personal access tokens are
-   required anywhere in this pipeline — the goreleaser build runs as a later step in the
-   *same* workflow run that release-please just ran in, rather than depending on the new
-   tag re-triggering a separate workflow (which the default `GITHUB_TOKEN` cannot do).
+3. A maintainer approves and squash-merges the Release PR when a release is wanted. It is
+   not auto-merged: a merge made with the workflow's `GITHUB_TOKEN` does not trigger
+   workflows, so the release step below would never run. The Release PR is opened by
+   `github-actions[bot]`, so its CI runs may wait for approval ("action required");
+   approve them from the PR before merging.
+4. Once merged, release-please tags the release as plain `vX.Y.Z` and publishes a GitHub
+   Release with generated notes, and, in the same workflow run, builds and attaches release
+   binaries via `goreleaser` (see `.goreleaser.yaml`). Tags carry no `flatcar-vex-`
+   component prefix (`include-component-in-tag: false` in `release-please-config.json`)
+   because goreleaser only accepts semver tags. No extra secrets or personal access tokens
+   are required: goreleaser runs in the *same* workflow run as release-please rather than
+   depending on the new tag re-triggering a separate workflow (which the default
+   `GITHUB_TOKEN` cannot do).
 5. [`.github/workflows/release.yml`](./.github/workflows/release.yml) (tag-push triggered)
    remains as a manual fallback, e.g. for re-running a release build off a manually pushed
-   tag.
+   `vX.Y.Z` tag.
 
-This means merging any PR with a `feat:`/`fix:`/etc. title to `main` can result in a new
-tagged release within minutes, with no further action from anyone. If you need to hold off
-a release (e.g. to batch several changes), merge PRs with a non-releasing title prefix
-(`chore:`, `docs:`, `test:`, etc.) or ask a maintainer to pause the Release PR's auto-merge
-before merging your PR.
+Merging a PR with a `feat:`/`fix:`/etc. title to `main` only updates the Release PR; nothing
+is released until a maintainer merges that Release PR, so several changes can be batched
+into one release.

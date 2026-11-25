@@ -1,8 +1,10 @@
 {
+  "last-release-sha": "232f2818a6846fa09f9860ce5f63120c91fa7fbf",
   "packages": {
     ".": {
       "release-type": "go",
       "package-name": "flatcar-vex",
+      "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false

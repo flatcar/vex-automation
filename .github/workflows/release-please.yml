@@ -33,26 +33,17 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # Fully automatic releases: no one manually clicks "merge" on the
-      # Release PR. This enables GitHub's native auto-merge on it, which
-      # still waits for required status checks (CI) on the Release PR's
-      # branch to pass before merging -- it only skips the required
-      # approving review, since this PR is never meant to be
-      # human-reviewed. That requires allow_auto_merge to be enabled and
-      # the GitHub Actions app to be a default-branch-protection
-      # bypass_actor (both configured in safe-settings-admin's
-      # .github/repos/vex-automation.yml, not here).
-      - name: Auto-merge release PR
-        if: ${{ steps.release.outputs.prs_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          pr_number=$(jq -r '.number' <<< '${{ steps.release.outputs.pr }}')
-          gh pr merge --squash --auto "$pr_number" -R "${{ github.repository }}"
-
+      # The Release PR is merged by a maintainer, not auto-merged with
+      # GITHUB_TOKEN: a merge made with GITHUB_TOKEN does not trigger this
+      # workflow again, so the release (and the build below) would never
+      # happen. See CONTRIBUTING.md.
+      #
       # Everything below only runs when release-please just created a new
       # release (i.e. a release PR was merged on this push), building and
-      # attaching binaries to the release it created.
+      # attaching binaries to the release it created. Tags are plain
+      # vX.Y.Z (include-component-in-tag: false in
+      # release-please-config.json) because goreleaser requires a semver
+      # tag and cannot parse "flatcar-vex-vX.Y.Z".
       - uses: actions/checkout@v4
         if: ${{ steps.release.outputs.release_created }}
         with:
