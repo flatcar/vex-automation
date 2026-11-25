@@ -492,13 +492,8 @@ func TestMatchOSVAppliesTimeoutEvenWithLooserParentDeadline(t *testing.T) {
 			{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 		},
 	}
-	opts := generateOptions{
-		osvBaseURL: srv.URL,
-		osvTimeout: 20 * time.Millisecond,
-	}
-
 	start := time.Now()
-	_, err := matchOSV(root, doc, opts)
+	_, err := matchOSV(root, doc.OSVPackages, srv.URL, 20*time.Millisecond)
 	elapsed := time.Since(start)
 
 	// Assert on the error itself (context.DeadlineExceeded), not just wall

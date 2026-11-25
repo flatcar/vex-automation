@@ -133,22 +133,8 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return fmt.Errorf("SBOM %s has no ebuild package to match against GLSAs, and OSV.dev matching is disabled (--osv=false): nothing would be checked", opts.sbomPath)
 	}
 
-	glsas, err := glsa.LoadDir(opts.glsaDir)
-	var parseErr *glsa.ParseError
-	skippedGLSAs := 0
-	switch {
-	case errors.As(err, &parseErr) && opts.allowGLSAErrors && len(glsas) > 0:
-		skippedGLSAs = len(parseErr.Errs)
-		for _, e := range parseErr.Errs {
-			slog.Warn("skipping unparseable GLSA file", "error", e)
-		}
-	case err != nil:
-		switch {
-		case parseErr != nil && opts.allowGLSAErrors:
-			return fmt.Errorf("no GLSA file in %s could be parsed: %w", opts.glsaDir, err)
-		case parseErr != nil:
-			return fmt.Errorf("%w (pass --allow-glsa-errors to continue without them)", err)
-		}
+	glsas, skippedGLSAs, err := loadGLSAs(opts.glsaDir, opts.allowGLSAErrors)
+	if err != nil {
 		return err
 	}
 
@@ -162,36 +148,26 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 
 	findings := match.Run(doc.Packages, glsas, opts.arch)
 
-	tooling := "flatcar-vex generate (sources: Gentoo GLSA, OSV.dev)"
 	if !opts.osvEnabled {
-		tooling = "flatcar-vex generate (sources: Gentoo GLSA only; OSV.dev disabled, golang/cargo packages not checked)"
 		if len(doc.OSVPackages) > 0 {
 			slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
 				"packages", len(doc.OSVPackages))
 		}
 	} else {
-		if opts.osvTimeout < 0 {
-			return fmt.Errorf("--osv-timeout must be >= 0 unless --osv=false")
+		if err := validateOSVFlags(opts.osvBaseURL, opts.osvTimeout); err != nil {
+			return err
 		}
-		if opts.osvBaseURL == "" {
-			return fmt.Errorf("--osv-base-url must not be empty unless --osv=false")
-		}
-		osvFindings, err := matchOSV(cmd, doc, opts)
+		osvFindings, err := matchOSV(cmd, doc.OSVPackages, opts.osvBaseURL, opts.osvTimeout)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
 		findings = append(findings, osvFindings...)
 	}
-	// Like disabled OSV matching, an incomplete GLSA corpus must be visible
-	// in the document itself, not only in the logs.
-	if skippedGLSAs > 0 {
-		tooling = strings.TrimSuffix(tooling, ")") + fmt.Sprintf("; incomplete GLSA corpus, unparseable files skipped: %d)", skippedGLSAs)
-	}
 
 	vexDoc, err := vexgen.Build(findings, vexgen.Metadata{
 		Author:    opts.author,
 		ProductID: productID,
-		Tooling:   tooling,
+		Tooling:   toolingOf("generate", opts.osvEnabled, skippedGLSAs),
 	})
 	if err != nil {
 		return err
@@ -206,21 +182,69 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 	return writeOutput(cmd, opts.outPath, out)
 }
 
-// matchOSV runs match.RunOSV against doc's golang/cargo packages, bounding
-// the call with opts.osvTimeout. context.WithTimeout automatically keeps
-// the earliest of the parent's existing deadline (if any) and this one, so
-// the flag stays effective even when cmd's context already carries its own
-// (possibly looser) deadline.
-func matchOSV(cmd *cobra.Command, doc sbom.Document, opts generateOptions) ([]match.Finding, error) {
-	ctx := cmd.Context()
-	if opts.osvTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.osvTimeout)
-		defer cancel()
+// loadGLSAs loads every advisory in dir. With allowErrors, unparseable
+// files are logged and skipped (their count is returned) as long as at
+// least one advisory could be parsed; otherwise any parse error fails.
+func loadGLSAs(dir string, allowErrors bool) ([]glsa.GLSA, int, error) {
+	glsas, err := glsa.LoadDir(dir)
+	var parseErr *glsa.ParseError
+	switch {
+	case errors.As(err, &parseErr) && allowErrors && len(glsas) > 0:
+		for _, e := range parseErr.Errs {
+			slog.Warn("skipping unparseable GLSA file", "error", e)
+		}
+		return glsas, len(parseErr.Errs), nil
+	case parseErr != nil && allowErrors:
+		return nil, 0, fmt.Errorf("no GLSA file in %s could be parsed: %w", dir, err)
+	case parseErr != nil:
+		return nil, 0, fmt.Errorf("%w (pass --allow-glsa-errors to continue without them)", err)
+	case err != nil:
+		return nil, 0, err
 	}
+	return glsas, 0, nil
+}
 
-	client := &osv.Client{BaseURL: opts.osvBaseURL}
-	return match.RunOSV(ctx, doc.OSVPackages, client)
+// validateOSVFlags checks the OSV.dev flags shared by generate and diff.
+func validateOSVFlags(baseURL string, timeout time.Duration) error {
+	if timeout < 0 {
+		return fmt.Errorf("--osv-timeout must be >= 0 unless --osv=false")
+	}
+	if baseURL == "" {
+		return fmt.Errorf("--osv-base-url must not be empty unless --osv=false")
+	}
+	return nil
+}
+
+// toolingOf describes the sources behind a command's output. Disabled
+// OSV.dev matching and an incomplete GLSA corpus must be visible in the
+// output itself, not only in the logs.
+func toolingOf(command string, osvEnabled bool, skippedGLSAs int) string {
+	sources := "Gentoo GLSA, OSV.dev"
+	if !osvEnabled {
+		sources = "Gentoo GLSA only; OSV.dev disabled, golang/cargo packages not checked"
+	}
+	if skippedGLSAs > 0 {
+		sources += fmt.Sprintf("; incomplete GLSA corpus, unparseable files skipped: %d", skippedGLSAs)
+	}
+	return fmt.Sprintf("flatcar-vex %s (sources: %s)", command, sources)
+}
+
+// withOSVTimeout bounds ctx with --osv-timeout (0 means no extra bound).
+// context.WithTimeout keeps the earliest of the parent's existing deadline
+// (if any) and this one, so the flag stays effective even when ctx already
+// carries its own (possibly looser) deadline.
+func withOSVTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return context.WithTimeout(ctx, timeout)
+	}
+	return ctx, func() {}
+}
+
+// matchOSV runs match.RunOSV against pkgs, bounded by timeout.
+func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]match.Finding, error) {
+	ctx, cancel := withOSVTimeout(cmd.Context(), timeout)
+	defer cancel()
+	return match.RunOSV(ctx, pkgs, &osv.Client{BaseURL: baseURL})
 }
 
 // logSkipped summarizes, per reason, the SBOM packages that no

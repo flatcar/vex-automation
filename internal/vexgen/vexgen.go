@@ -30,21 +30,11 @@ type Metadata struct {
 	Tooling string
 }
 
-// statusPrecedence orders statuses from most to least severe. When packages
-// in one product disagree about a CVE (e.g. one copy fixed, another still
-// affected), the product as a whole takes the most severe status.
-var statusPrecedence = []match.Status{
-	match.StatusAffected,
-	match.StatusUnderInvestigation,
-	match.StatusFixed,
-	match.StatusNotAffected,
-}
-
 // Build converts findings into an OpenVEX document with exactly one
 // statement per CVE: a product can't be both fixed and affected by the same
 // vulnerability, so emitting a statement per status would contradict
 // itself. The statement's status is the most severe status among the CVE's
-// findings (see statusPrecedence), and its subcomponents are the packages
+// findings (see match.StatusPrecedence), and its subcomponents are the packages
 // that have that status.
 func Build(findings []match.Finding, meta Metadata) (*vex.VEX, error) {
 	if meta.ProductID == "" {
@@ -79,7 +69,7 @@ func Build(findings []match.Finding, meta Metadata) (*vex.VEX, error) {
 	for _, cve := range cves {
 		var status match.Status
 		var group []match.Finding
-		for _, s := range statusPrecedence {
+		for _, s := range match.StatusPrecedence {
 			if g := byCVE[cve][s]; len(g) > 0 {
 				status, group = s, g
 				break

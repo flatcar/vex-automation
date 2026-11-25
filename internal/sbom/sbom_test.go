@@ -3,6 +3,7 @@ package sbom
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -199,5 +200,47 @@ func TestLoadInvalidJSON(t *testing.T) {
 	path := writeTemp(t, "bad.json", "{not json")
 	if _, err := Load(path); err == nil {
 		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestOSVVersion(t *testing.T) {
+	cases := []struct{ ecosystem, name, in, want string }{
+		{"golang", "stdlib", "go1.25.3", "1.25.3"},
+		// Regression: Syft appends the GOEXPERIMENT suffix of
+		// runtime.Version(), which OSV.dev reads as a pre-release of
+		// 1.26.10 and so reports vulnerabilities fixed in 1.26.10.
+		{"golang", "stdlib", "go1.26.10-X:nodwarf5", "1.26.10"},
+		{"golang", "toolchain", "go1.26.10 X:nodwarf5,jsonv2", "1.26.10"},
+		{"golang", "example.com/mod", "v1.2.3-X:keep", "v1.2.3-X:keep"},
+		{"cargo", "stdlib", "go1.0", "go1.0"},
+	}
+	for _, c := range cases {
+		if got := osvVersion(c.ecosystem, c.name, c.in); got != c.want {
+			t.Errorf("osvVersion(%q, %q, %q) = %q, want %q", c.ecosystem, c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// A golang module whose version can't be queried keeps its normalized
+// identity, so a diff can tell it is another copy of a queried module.
+func TestLoadKeepsIdentityOfUnqueryableModules(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sbom.json")
+	if err := os.WriteFile(path, []byte(`{"spdxVersion": "SPDX-2.3", "packages": [
+		{"name": "runc", "versionInfo": "(devel)", "externalRefs": [{"referenceType": "purl", "referenceLocator": "pkg:golang/github.com/opencontainers/runc@(devel)"}]},
+		{"name": "etcdctl", "versionInfo": "(devel)", "externalRefs": [{"referenceType": "purl", "referenceLocator": "pkg:golang/go.etcd.io/etcd@(devel)#etcdctl/v3"}]},
+		{"name": "fuse", "versionInfo": "3.17.0", "externalRefs": [{"referenceType": "purl", "referenceLocator": "pkg:ebuild/sys-fs/fuse@3.17.0"}]}
+	]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	doc, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, sk := range doc.Skipped {
+		got = append(got, sk.Ecosystem+":"+sk.Module)
+	}
+	if want := []string{"golang:github.com/opencontainers/runc", "golang:go.etcd.io/etcd/etcdctl/v3"}; !slices.Equal(got, want) {
+		t.Errorf("skipped identities = %v, want %v", got, want)
 	}
 }

@@ -69,6 +69,9 @@ type Vulnerability struct {
 	Aliases []string
 	// Summary is a short, human-readable description, if the record has one.
 	Summary string
+	// AffectedVersions lists every version the record enumerates as
+	// affected, across all of its affected packages.
+	AffectedVersions []string
 }
 
 // CVEs returns every CVE-formatted identifier among ID and Aliases, sorted
@@ -181,7 +184,7 @@ func (c *Client) Query(ctx context.Context, purls []string) (map[string][]Vulner
 	}
 	sort.Strings(uniqueIDs)
 
-	vulnsByID, err := c.fetchVulnerabilities(ctx, uniqueIDs)
+	vulnsByID, err := c.fetchVulnerabilities(ctx, uniqueIDs, false)
 	if err != nil {
 		return nil, err
 	}
@@ -366,9 +369,26 @@ func (c *Client) queryBatchOnce(ctx context.Context, purls []string) ([][]string
 // --- vulns/{id} ---
 
 type vulnResponse struct {
-	ID      string   `json:"id"`
-	Aliases []string `json:"aliases"`
-	Summary string   `json:"summary"`
+	ID       string   `json:"id"`
+	Aliases  []string `json:"aliases"`
+	Summary  string   `json:"summary"`
+	Affected []struct {
+		Versions []string `json:"versions"`
+	} `json:"affected"`
+}
+
+func (r vulnResponse) vulnerability() Vulnerability {
+	v := Vulnerability{ID: r.ID, Aliases: r.Aliases, Summary: r.Summary}
+	for _, a := range r.Affected {
+		v.AffectedVersions = append(v.AffectedVersions, a.Versions...)
+	}
+	return v
+}
+
+// Get fetches the records with the given IDs. IDs OSV.dev has no record
+// for are left out of the result instead of failing the call.
+func (c *Client) Get(ctx context.Context, ids []string) (map[string]Vulnerability, error) {
+	return c.fetchVulnerabilities(ctx, ids, true)
 }
 
 // fetchVulnerabilities calls GET /v1/vulns/{id} once per id and returns the
@@ -380,7 +400,8 @@ type vulnResponse struct {
 // ID would scale goroutine count with input size rather than with the
 // concurrency limit. On the first error, remaining in-flight/queued
 // fetches are canceled and that error is returned.
-func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map[string]Vulnerability, error) {
+// With skipMissing, IDs answered with 404 are left out instead of failing.
+func (c *Client) fetchVulnerabilities(parent context.Context, ids []string, skipMissing bool) (map[string]Vulnerability, error) {
 	if len(ids) == 0 {
 		return map[string]Vulnerability{}, nil
 	}
@@ -389,9 +410,10 @@ func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map
 	defer cancel()
 
 	type result struct {
-		id  string
-		v   Vulnerability
-		err error
+		id      string
+		v       Vulnerability
+		missing bool
+		err     error
 	}
 
 	workers := c.vulnFetchConcurrency()
@@ -415,6 +437,11 @@ func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map
 				// which URL path this request actually hits (ids come from
 				// an untrusted upstream response, see queryBatch above).
 				if err := c.doJSON(ctx, http.MethodGet, "/v1/vulns/"+url.PathEscape(id), nil, &resp); err != nil {
+					var se *statusError
+					if skipMissing && errors.As(err, &se) && se.code == http.StatusNotFound {
+						results <- result{id: id, missing: true}
+						continue
+					}
 					results <- result{id: id, err: fmt.Errorf("osv: fetching vulnerability %q: %w", id, err)}
 					continue
 				}
@@ -422,7 +449,7 @@ func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map
 					results <- result{id: id, err: fmt.Errorf("osv: fetching vulnerability %q: response is for %q", id, resp.ID)}
 					continue
 				}
-				results <- result{id: id, v: Vulnerability(resp)}
+				results <- result{id: id, v: resp.vulnerability()}
 			}
 		}()
 	}
@@ -451,6 +478,9 @@ func (c *Client) fetchVulnerabilities(parent context.Context, ids []string) (map
 				firstErr = r.err
 				cancel() // stop remaining in-flight/queued fetches early
 			}
+			continue
+		}
+		if r.missing {
 			continue
 		}
 		out[r.id] = r.v
