@@ -47,6 +47,8 @@ re-fetching or re-parsing individual files itself.`,
 			switch {
 			case res.Cloned:
 				_, err = fmt.Fprintf(out, "Cloned GLSA mirror at %s (%d advisories, %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
+			case res.OldCommit == "":
+				_, err = fmt.Fprintf(out, "Updated GLSA mirror at %s (%d advisories, now at %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
 			case res.OldCommit == res.NewCommit:
 				_, err = fmt.Fprintf(out, "GLSA mirror at %s is already up to date (%d advisories)\n", res.Dest, res.FileCount)
 			default:

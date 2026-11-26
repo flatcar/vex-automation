@@ -138,3 +138,27 @@ func TestSyncGLSACmdReportsProgressAndChanges(t *testing.T) {
 		t.Errorf("stdout = %q, want old and new commit", stdout)
 	}
 }
+
+func TestSyncGLSACmdReportsUpdateFromUnbornHead(t *testing.T) {
+	upstream := newTestGLSAUpstream(t)
+	dest := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", upstream}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dest
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	cmd := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"sync-glsa", "--dest", dest, "--repo", upstream})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if !regexp.MustCompile(`^Updated GLSA mirror at .* \(1 advisories, now at [0-9a-f]{12}\)\n$`).MatchString(stdout.String()) {
+		t.Errorf("stdout = %q, want an update to a commit", stdout.String())
+	}
+}
