@@ -262,22 +262,14 @@ for a scheduled job:
 
 Add `--osv=false` to skip the OSV.dev queries (GLSA-only, no network for `generate`).
 
-Please find information on:
-
-- [Contribution Guide](https://github.com/flatcar/Flatcar/blob/main/CONTRIBUTING.md) – how to get involved and submit patches.
-- [Repository Codeowners](./CODEOWNERS) – who's assigned for contribution reviews in this repository.
-- [Repository Maintainers](./MAINTAINERS.md) – who’s responsible for what in this repository.
-- [Flatcar Project Maintainers](https://github.com/flatcar/Flatcar/blob/main/MAINTAINERS.md) – who’s responsible for what at Flatcar.
-- [Governance](https://github.com/flatcar/Flatcar/blob/main/governance.md) – how decisions are made and who the stakeholders are.
-- [Code of Conduct](./code-of-conduct.md) – our commitment to a welcoming and inclusive community.
-- [LICENSE](./LICENSE) - License under which the software is released.
-
 ---
 
 ## Community & Project Documentation
 
-- [Contributing Guidelines](CONTRIBUTING.md) — How to contribute, find issues, and submit pull requests
-- [Code of Conduct](CODE_OF_CONDUCT.md) — Standards for respectful and inclusive community participation
-- [Security Policy](SECURITY.md) — How to report vulnerabilities and security-related information
-- [Maintainers](MAINTAINERS.md) — Current project maintainers and their responsibilities
-- [Governance](GOVERNANCE.md) — Project governance model, decision-making process, and roles
+- [Contributing Guidelines](CONTRIBUTING.md): how to contribute, find issues, and submit pull requests.
+- [Code of Conduct](CODE_OF_CONDUCT.md): standards for respectful and inclusive community participation.
+- [Security Policy](SECURITY.md): how to report vulnerabilities.
+- [Maintainers](MAINTAINERS.md) and [Codeowners](CODEOWNERS): who maintains and reviews this repository.
+- [Flatcar Project Maintainers](https://github.com/flatcar/Flatcar/blob/main/MAINTAINERS.md): who is responsible for what across Flatcar.
+- [Governance](GOVERNANCE.md): governance model, decision-making process, and roles.
+- [License](LICENSE): Apache License 2.0.
