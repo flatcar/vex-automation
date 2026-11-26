@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0](https://github.com/flatcar/vex-automation/compare/v2.1.0...v2.2.0) (2026-11-26)
+
+
+### Features
+
+* publish Linux packages and report sync-glsa progress ([#16](https://github.com/flatcar/vex-automation/issues/16)) ([1a7dac4](https://github.com/flatcar/vex-automation/commit/1a7dac4cb5e4ae96d9d9a23d6293385ead1b70ea))
+
 ## [2.1.0](https://github.com/flatcar/vex-automation/compare/v2.0.0...v2.1.0) (2026-11-25)
 
 
