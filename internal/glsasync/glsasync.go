@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -141,14 +140,21 @@ func headCommit(ctx context.Context, dest string) (string, error) {
 	}
 }
 
-// redact drops any user:password part from repoURL for display.
+// redact drops any user:password part from repoURL for display. It works
+// on the raw string because url.Parse rejects (or misreads) URLs whose
+// password contains an unescaped "%" or "/", and scp-like user@host:path.
 func redact(repoURL string) string {
-	u, err := url.Parse(repoURL)
-	if err != nil || u.User == nil {
+	prefix, rest := "", repoURL
+	if i := strings.Index(rest, "://"); i >= 0 {
+		prefix, rest = rest[:i+3], rest[i+3:]
+	} else if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	at := strings.LastIndexByte(rest, '@')
+	if at < 0 {
 		return repoURL
 	}
-	u.User = nil
-	return u.String()
+	return prefix + repoURL[len(prefix)+at+1:]
 }
 
 // git runs git commands, reporting steps (and, on a terminal, git's

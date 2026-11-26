@@ -436,3 +436,18 @@ func TestNetworkArgsAddsProgressOnlyForTerminals(t *testing.T) {
 		t.Errorf("terminal: networkArgs = %v, want --progress after the subcommand", got)
 	}
 }
+
+func TestRedact(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://anongit.gentoo.org/git/data/glsa.git": "https://anongit.gentoo.org/git/data/glsa.git",
+		"https://user:s3cret@host/glsa.git":            "https://host/glsa.git",
+		"https://user:pa%zz@host/glsa.git":             "https://host/glsa.git",
+		"https://user:p/w@host/glsa.git":               "https://host/glsa.git",
+		"git@github.com:gentoo/glsa.git":               "github.com:gentoo/glsa.git",
+		"/srv/mirror/glsa":                             "/srv/mirror/glsa",
+	} {
+		if got := redact(in); got != want {
+			t.Errorf("redact(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
