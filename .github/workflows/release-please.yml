@@ -33,11 +33,51 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # The Release PR is merged by a maintainer, not auto-merged with
-      # GITHUB_TOKEN: a merge made with GITHUB_TOKEN does not trigger this
-      # workflow again, so the release (and the build below) would never
-      # happen. See CONTRIBUTING.md.
+      # Auto-merge the Release PR, the same way flatcar/scripts lets its bot
+      # through: the merge is made as the flatcar-infra user with its PAT
+      # (BOT_PR_TOKEN repo secret), and flatcar-infra is an `always` bypass
+      # actor on the default-branch-protection ruleset (configured in
+      # flatcar/safe-settings-admin .github/repos/vex-automation.yml).
       #
+      # GITHUB_TOKEN cannot be used here: the GitHub Actions app can't be
+      # given a working ruleset bypass, and a merge made with GITHUB_TOKEN
+      # would not trigger this workflow again, so the release would never be
+      # cut. A PAT merge does trigger it: the next run of this workflow sees
+      # the merged Release PR, tags the release and runs goreleaser below.
+      #
+      # release-please itself deliberately keeps using GITHUB_TOKEN: a tag
+      # it pushes with a PAT would also trigger release.yml and build the
+      # release twice.
+      #
+      # Without BOT_PR_TOKEN this step only warns, and a maintainer merges
+      # the Release PR by hand as before.
+      - name: Merge the Release PR
+        if: ${{ !steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.BOT_PR_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_BRANCH: release-please--branches--main--components--flatcar-vex
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::warning::BOT_PR_TOKEN is not set; merge the Release PR manually."
+            exit 0
+          fi
+          pr=$(gh pr list --head "${RELEASE_BRANCH}" --state open \
+            --label 'autorelease: pending' --json number --jq '.[0].number // empty')
+          if [ -z "${pr}" ]; then
+            echo "No open Release PR."
+            exit 0
+          fi
+          # GitHub may still be computing mergeability of a just-updated PR.
+          for attempt in 1 2 3 4 5; do
+            if gh pr merge "${pr}" --squash --admin; then
+              exit 0
+            fi
+            echo "Merge attempt ${attempt} failed, retrying in 15s..."
+            sleep 15
+          done
+          exit 1
+
       # Everything below only runs when release-please just created a new
       # release (i.e. a release PR was merged on this push), building and
       # attaching binaries to the release it created. Tags are plain
