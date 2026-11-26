@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -92,5 +93,72 @@ func TestSyncGLSACmdHelp(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help output missing %q: %q", want, out.String())
 		}
+	}
+}
+
+func TestSyncGLSACmdReportsProgressAndChanges(t *testing.T) {
+	upstream := newTestGLSAUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+
+	run := func() (string, string) {
+		t.Helper()
+		cmd := NewRootCmd()
+		var stdout, stderr bytes.Buffer
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		cmd.SetArgs([]string{"sync-glsa", "--dest", dest, "--repo", upstream})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+		}
+		return stdout.String(), stderr.String()
+	}
+
+	if _, stderr := run(); !strings.Contains(stderr, "Cloning "+upstream) {
+		t.Errorf("clone stderr = %q, want a Cloning step", stderr)
+	}
+
+	stdout, stderr := run()
+	if !strings.Contains(stderr, "Fetching updates from "+upstream) {
+		t.Errorf("update stderr = %q, want a Fetching step", stderr)
+	}
+	if want := "GLSA mirror at " + dest + " is already up to date (1 advisories)"; !strings.Contains(stdout, want) {
+		t.Errorf("stdout = %q, want %q", stdout, want)
+	}
+
+	cmd := exec.Command("git", "commit", "--allow-empty", "-m", "next")
+	cmd.Dir = upstream
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	if stdout, _ := run(); !regexp.MustCompile(`Updated GLSA mirror at .* \(1 advisories, [0-9a-f]{12} -> [0-9a-f]{12}\)`).MatchString(stdout) {
+		t.Errorf("stdout = %q, want old and new commit", stdout)
+	}
+}
+
+func TestSyncGLSACmdReportsUpdateFromUnbornHead(t *testing.T) {
+	upstream := newTestGLSAUpstream(t)
+	dest := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"remote", "add", "origin", upstream}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dest
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	cmd := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"sync-glsa", "--dest", dest, "--repo", upstream})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstderr: %s", err, stderr.String())
+	}
+	if !regexp.MustCompile(`^Updated GLSA mirror at .* \(1 advisories, now at [0-9a-f]{12}\)\n$`).MatchString(stdout.String()) {
+		t.Errorf("stdout = %q, want an update to a commit", stdout.String())
 	}
 }

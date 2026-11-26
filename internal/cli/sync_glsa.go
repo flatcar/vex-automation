@@ -39,15 +39,21 @@ re-fetching or re-parsing individual files itself.`,
 				ctx, cancel = context.WithTimeout(ctx, timeout)
 				defer cancel()
 			}
-			res, err := glsasync.Sync(ctx, dest, repo)
+			res, err := glsasync.Sync(ctx, dest, repo, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
-			action := "Updated"
-			if res.Cloned {
-				action = "Cloned"
+			out := cmd.OutOrStdout()
+			switch {
+			case res.Cloned:
+				_, err = fmt.Fprintf(out, "Cloned GLSA mirror at %s (%d advisories, %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
+			case res.OldCommit == "":
+				_, err = fmt.Fprintf(out, "Updated GLSA mirror at %s (%d advisories, now at %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
+			case res.OldCommit == res.NewCommit:
+				_, err = fmt.Fprintf(out, "GLSA mirror at %s is already up to date (%d advisories)\n", res.Dest, res.FileCount)
+			default:
+				_, err = fmt.Fprintf(out, "Updated GLSA mirror at %s (%d advisories, %s -> %s)\n", res.Dest, res.FileCount, short(res.OldCommit), short(res.NewCommit))
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s GLSA mirror at %s (%d advisories)\n", action, res.Dest, res.FileCount)
 			return err
 		},
 	}
@@ -57,4 +63,11 @@ re-fetching or re-parsing individual files itself.`,
 	cmd.Flags().DurationVar(&timeout, "timeout", glsasync.DefaultTimeout, "maximum time to allow the clone/update to run")
 
 	return cmd
+}
+
+func short(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }

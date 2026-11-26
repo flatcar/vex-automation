@@ -30,6 +30,28 @@ archives:
       - goos: windows
         formats: [zip]
 
+nfpms:
+  - id: flatcar-vex
+    package_name: flatcar-vex
+    file_name_template: "{{ .ConventionalFileName }}"
+    formats: [deb, rpm, archlinux]
+    vendor: Flatcar
+    homepage: https://github.com/flatcar/vex-automation
+    maintainer: Flatcar Maintainers <maintainers@flatcar-linux.org>
+    description: Generates OpenVEX documents and CVE release-note diffs for Flatcar releases.
+    license: Apache-2.0
+    bindir: /usr/bin
+    # sync-glsa shells out to git.
+    dependencies:
+      - git
+    archlinux:
+      packager: Flatcar Maintainers <maintainers@flatcar-linux.org>
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/flatcar-vex/README.md
+      - src: LICENSE
+        dst: /usr/share/doc/flatcar-vex/LICENSE
+
 checksum:
   name_template: "checksums.txt"
 

@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/openvex/go-vex v0.2.8
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/term v0.44.0
 )
 
 require (
@@ -482,7 +483,6 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect

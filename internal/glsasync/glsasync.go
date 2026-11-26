@@ -13,12 +13,16 @@ package glsasync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // DefaultRepoURL is Gentoo's canonical GLSA data repository. It is the same
@@ -40,6 +44,11 @@ type Result struct {
 	// FileCount is the number of glsa-*.xml files present in Dest after
 	// syncing.
 	FileCount int
+	// OldCommit and NewCommit are the checked-out commit before and after
+	// syncing. OldCommit is empty after a clone, or when an existing
+	// checkout had no commit yet (e.g. an interrupted clone).
+	OldCommit string
+	NewCommit string
 }
 
 // Sync ensures dest contains an up-to-date checkout of the GLSA corpus from
@@ -52,7 +61,10 @@ type Result struct {
 // exists, is non-empty, and isn't such a checkout (git's own clone-into-a-
 // non-empty-directory error enforces this, though an empty pre-existing
 // directory is accepted).
-func Sync(ctx context.Context, dest, repoURL string) (Result, error) {
+//
+// If progress is non-nil, Sync writes each step to it, plus git's own
+// progress meter when progress is a terminal.
+func Sync(ctx context.Context, dest, repoURL string, progress io.Writer) (Result, error) {
 	if strings.TrimSpace(dest) == "" {
 		return Result{}, fmt.Errorf("glsasync: dest must not be empty")
 	}
@@ -73,44 +85,113 @@ func Sync(ctx context.Context, dest, repoURL string) (Result, error) {
 		defer cancel()
 	}
 
+	g := git{progress: progress}
 	gitDir := filepath.Join(dest, ".git")
 	_, statErr := os.Stat(gitDir)
 	switch {
 	case os.IsNotExist(statErr):
-		if err := clone(ctx, dest, repoURL); err != nil {
+		if err := g.clone(ctx, dest, repoURL); err != nil {
 			return Result{}, err
 		}
-		return finish(dest, true)
+		return finish(ctx, dest, true, "")
 	case statErr != nil:
 		return Result{}, fmt.Errorf("glsasync: checking %s: %w", gitDir, statErr)
 	default:
-		if err := update(ctx, dest, repoURL); err != nil {
+		old, err := headCommit(ctx, dest)
+		if err != nil {
 			return Result{}, err
 		}
-		return finish(dest, false)
+		if err := g.update(ctx, dest, repoURL); err != nil {
+			return Result{}, err
+		}
+		return finish(ctx, dest, false, old)
 	}
 }
 
-func finish(dest string, cloned bool) (Result, error) {
+func finish(ctx context.Context, dest string, cloned bool, oldCommit string) (Result, error) {
 	n, err := countGLSAFiles(dest)
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Dest: dest, Cloned: cloned, FileCount: n}, nil
+	head, err := headCommit(ctx, dest)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{Dest: dest, Cloned: cloned, FileCount: n, OldCommit: oldCommit, NewCommit: head}, nil
 }
 
-func clone(ctx context.Context, dest, repoURL string) error {
+// headCommit returns the commit checked out in dest, or "" if HEAD has no
+// commit yet. An invalid repository is an error.
+func headCommit(ctx context.Context, dest string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dest, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(out)), nil
+	case errors.As(err, &exit) && exit.ExitCode() == 1 && stderr.Len() == 0:
+		return "", nil
+	case stderr.Len() > 0:
+		return "", fmt.Errorf("glsasync: reading HEAD of %s: %w: %s", dest, err, strings.TrimSpace(stderr.String()))
+	default:
+		return "", fmt.Errorf("glsasync: reading HEAD of %s: %w", dest, err)
+	}
+}
+
+// redact drops any user:password part from repoURL for display. It works
+// on the raw string because url.Parse rejects (or misreads) URLs whose
+// password contains an unescaped "%" or "/", and scp-like user@host:path.
+func redact(repoURL string) string {
+	prefix, rest := "", repoURL
+	if i := strings.Index(rest, "://"); i >= 0 {
+		prefix, rest = rest[:i+3], rest[i+3:]
+	} else if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+		rest = rest[:slash]
+	}
+	at := strings.LastIndexByte(rest, '@')
+	if at < 0 {
+		return repoURL
+	}
+	return prefix + repoURL[len(prefix)+at+1:]
+}
+
+// git runs git commands, reporting steps (and, on a terminal, git's
+// progress meter) to progress.
+type git struct {
+	progress io.Writer
+}
+
+func (g git) step(format string, args ...any) {
+	if g.progress != nil {
+		_, _ = fmt.Fprintf(g.progress, format+"\n", args...)
+	}
+}
+
+// networkArgs inserts --progress after the git subcommand when progress is
+// a terminal, so git shows its meter even though its stderr is a pipe.
+func (g git) networkArgs(args ...string) []string {
+	if f, ok := g.progress.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		return append([]string{args[0], "--progress"}, args[1:]...)
+	}
+	return args
+}
+
+func (g git) clone(ctx context.Context, dest, repoURL string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("glsasync: creating parent of %s: %w", dest, err)
 	}
-	if err := runGit(ctx, "", "clone", "--depth", "1", repoURL, dest); err != nil {
-		return fmt.Errorf("glsasync: cloning %s into %s: %w", repoURL, dest, err)
+	g.step("Cloning %s into %s...", redact(repoURL), dest)
+	if err := g.run(ctx, "", g.networkArgs("clone", "--depth", "1", repoURL, dest)...); err != nil {
+		return fmt.Errorf("glsasync: cloning %s into %s: %w", redact(repoURL), dest, err)
 	}
 	return nil
 }
 
 // update fast-forwards an existing shallow clone to the latest upstream
-// commit. It fetches then hard-resets to origin/HEAD rather than running
+// commit. It fetches upstream's HEAD and hard-resets to it (one network
+// round-trip, as anongit.gentoo.org can be slow) rather than running
 // "git pull" directly, since a plain pull's merge step is unnecessary (and
 // occasionally fragile) for a read-only mirror that should always exactly
 // match upstream.
@@ -119,18 +200,16 @@ func clone(ctx context.Context, dest, repoURL string) error {
 // this, calling Sync again with a different --repo than the one dest was
 // originally cloned from would silently keep fetching from the old remote
 // instead of honoring the new one.
-func update(ctx context.Context, dest, repoURL string) error {
-	if err := setOriginURL(ctx, dest, repoURL); err != nil {
+func (g git) update(ctx context.Context, dest, repoURL string) error {
+	if err := g.setOriginURL(ctx, dest, repoURL); err != nil {
 		return err
 	}
-	if err := runGit(ctx, dest, "fetch", "--depth", "1", "origin"); err != nil {
+	g.step("Fetching updates from %s into %s...", redact(repoURL), dest)
+	if err := g.run(ctx, dest, g.networkArgs("fetch", "--depth", "1", "origin", "HEAD")...); err != nil {
 		return fmt.Errorf("glsasync: fetching updates in %s: %w", dest, err)
 	}
-	if err := runGit(ctx, dest, "remote", "set-head", "origin", "-a"); err != nil {
-		return fmt.Errorf("glsasync: resolving origin/HEAD in %s: %w", dest, err)
-	}
-	if err := runGit(ctx, dest, "reset", "--hard", "origin/HEAD"); err != nil {
-		return fmt.Errorf("glsasync: updating %s to origin/HEAD: %w", dest, err)
+	if err := g.run(ctx, dest, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("glsasync: updating %s to upstream HEAD: %w", dest, err)
 	}
 	return nil
 }
@@ -138,22 +217,26 @@ func update(ctx context.Context, dest, repoURL string) error {
 // setOriginURL points dest's "origin" remote at repoURL, so a later Sync
 // call with a different --repo doesn't silently keep updating from
 // whatever remote the directory happened to be cloned from originally.
-func setOriginURL(ctx context.Context, dest, repoURL string) error {
-	if err := runGit(ctx, dest, "remote", "set-url", "origin", repoURL); err != nil {
-		return fmt.Errorf("glsasync: pointing origin at %s in %s: %w", repoURL, dest, err)
+func (g git) setOriginURL(ctx context.Context, dest, repoURL string) error {
+	if err := g.run(ctx, dest, "remote", "set-url", "origin", repoURL); err != nil {
+		return fmt.Errorf("glsasync: pointing origin at %s in %s: %w", redact(repoURL), dest, err)
 	}
 	return nil
 }
 
-// runGit runs git with args, in dir if non-empty, returning stderr output
-// wrapped into the error on failure.
-func runGit(ctx context.Context, dir string, args ...string) error {
+// run runs git with args, in dir if non-empty, returning stderr output
+// wrapped into the error on failure. With --progress, stderr is also
+// passed through to g.progress.
+func (g git) run(ctx context.Context, dir string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	if len(args) > 1 && args[1] == "--progress" {
+		cmd.Stderr = io.MultiWriter(&stderr, g.progress)
+	}
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg != "" {
