@@ -10,7 +10,6 @@ import (
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/source/glsa"
 	"github.com/flatcar/vex-automation/internal/source/osv"
-	"github.com/flatcar/vex-automation/internal/vuln"
 	"github.com/spf13/cobra"
 )
 
@@ -126,41 +125,13 @@ func addOSVFindings(ctx context.Context, opts diffOptions, in *diff.Input) error
 	if err := applyCurlAdvisories(ctx, client, in); err != nil {
 		return fmt.Errorf("fetching curl advisories from OSV.dev: %w", err)
 	}
-	oldFindings, newFindings, err := matchOSVBothSides(ctx, client, in.Old.Doc.Modules, in.New.Doc.Modules)
+	osvFindings, err := opts.matchOSV(ctx, in.Old.Doc, in.New.Doc)
 	if err != nil {
 		return fmt.Errorf("matching against OSV.dev: %w", err)
 	}
-	in.Old.Findings = append(in.Old.Findings, oldFindings...)
-	in.New.Findings = append(in.New.Findings, newFindings...)
+	in.Old.Findings = append(in.Old.Findings, osvFindings[0]...)
+	in.New.Findings = append(in.New.Findings, osvFindings[1]...)
 	return nil
-}
-
-// matchOSVBothSides queries OSV.dev once for the packages of both sides,
-// so both are matched against the same OSV.dev data, then splits the
-// findings back per side.
-func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs []sbom.Package) (oldFindings, newFindings []vuln.Finding, err error) {
-	inOld, inNew := toSet(oldPkgs), toSet(newPkgs)
-	var bothSides []sbom.Package
-	seen := map[sbom.Package]bool{}
-	for _, pkg := range append(slices.Clone(oldPkgs), newPkgs...) {
-		if !seen[pkg] {
-			seen[pkg] = true
-			bothSides = append(bothSides, pkg)
-		}
-	}
-	findings, err := osv.Match(ctx, bothSides, client)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, finding := range findings {
-		if inOld[finding.Package] {
-			oldFindings = append(oldFindings, finding)
-		}
-		if inNew[finding.Package] {
-			newFindings = append(newFindings, finding)
-		}
-	}
-	return oldFindings, newFindings, nil
 }
 
 // applyCurlAdvisories rechecks the curl GLSA findings of both sides
@@ -188,12 +159,4 @@ func releaseOf(doc sbom.Document) diff.Release {
 		slog.Warn("cannot derive a product ID for the diff output", "error", err)
 	}
 	return diff.Release{SBOMName: doc.Name, ProductID: id}
-}
-
-func toSet(pkgs []sbom.Package) map[sbom.Package]bool {
-	set := make(map[sbom.Package]bool, len(pkgs))
-	for _, pkg := range pkgs {
-		set[pkg] = true
-	}
-	return set
 }

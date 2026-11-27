@@ -15,6 +15,7 @@ import (
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/source/glsa"
 	"github.com/flatcar/vex-automation/internal/source/osv"
+	"github.com/flatcar/vex-automation/internal/vuln"
 	"github.com/spf13/cobra"
 )
 
@@ -92,6 +93,38 @@ func (o *sharedOptions) tooling(command string, skippedGLSAs int) string {
 		sources += fmt.Sprintf("; incomplete GLSA corpus, unparseable files skipped: %d", skippedGLSAs)
 	}
 	return fmt.Sprintf("flatcar-vex %s (sources: %s)", command, sources)
+}
+
+// matchOSV matches the golang/cargo modules of each SBOM against OSV.dev
+// and returns the findings per SBOM, in the order given. OSV.dev is asked
+// once for the modules of all SBOMs, so they are all matched against the
+// same data. --osv-timeout limits the query.
+func (o *sharedOptions) matchOSV(ctx context.Context, docs ...sbom.Document) ([][]vuln.Finding, error) {
+	ctx, cancel := withTimeout(ctx, o.osvTimeout)
+	defer cancel()
+
+	var modules []sbom.Package
+	for _, doc := range docs {
+		for _, module := range doc.Modules {
+			if !slices.Contains(modules, module) {
+				modules = append(modules, module)
+			}
+		}
+	}
+	findings, err := osv.Match(ctx, modules, &osv.Client{BaseURL: o.osvBaseURL})
+	if err != nil {
+		return nil, err
+	}
+
+	perDoc := make([][]vuln.Finding, len(docs))
+	for i, doc := range docs {
+		for _, finding := range findings {
+			if slices.Contains(doc.Modules, finding.Package) {
+				perDoc[i] = append(perDoc[i], finding)
+			}
+		}
+	}
+	return perDoc, nil
 }
 
 // withTimeout limits ctx to timeout (0 means no limit).

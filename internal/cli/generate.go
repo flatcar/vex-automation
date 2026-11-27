@@ -6,13 +6,10 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/source/glsa"
-	"github.com/flatcar/vex-automation/internal/source/osv"
 	"github.com/flatcar/vex-automation/internal/vexgen"
-	"github.com/flatcar/vex-automation/internal/vuln"
 	"github.com/spf13/cobra"
 )
 
@@ -83,11 +80,11 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 	// be built from one combined list.
 	findings := glsa.Match(doc.Ebuilds, glsas, opts.arch)
 	if opts.osvEnabled {
-		osvFindings, err := matchOSV(cmd, doc.Modules, opts.osvBaseURL, opts.osvTimeout)
+		osvFindings, err := opts.matchOSV(cmd.Context(), doc)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
-		findings = append(findings, osvFindings...)
+		findings = append(findings, osvFindings[0]...)
 	} else if len(doc.Modules) > 0 {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
 			"packages", len(doc.Modules))
@@ -102,13 +99,6 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return err
 	}
 	return writeJSON(cmd, opts.outPath, vexDoc)
-}
-
-// matchOSV matches pkgs against OSV.dev, giving up after timeout.
-func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]vuln.Finding, error) {
-	ctx, cancel := withTimeout(cmd.Context(), timeout)
-	defer cancel()
-	return osv.Match(ctx, pkgs, &osv.Client{BaseURL: baseURL})
 }
 
 // writeJSON writes value as indented JSON to path, or to stdout.
