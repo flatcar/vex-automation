@@ -1,10 +1,6 @@
-// Package vuln is the shared vocabulary of the pipeline: a Finding says
-// how one vulnerability affects one installed package, with a VEX Status.
-//
-// Every vulnerability source (packages glsa and osv) produces Findings, and
-// every output (packages vexgen and diff) consumes them. Keeping the type
-// here means outputs never depend on how a source works, and a new source
-// only has to produce Findings.
+// Package vuln is the vocabulary shared by vulnerability sources and
+// outputs: a Finding says how one vulnerability affects one installed
+// package, with a VEX Status. See README.md.
 package vuln
 
 import (

@@ -1,15 +1,6 @@
 // Package osv is a small client for the OSV.dev vulnerability database
-// (https://google.github.io/osv.dev/api/). The API needs no authentication.
-//
-// Looking up packages takes two steps, because the batch endpoint only
-// returns vulnerability IDs:
-//
-//  1. POST /v1/querybatch: which vulnerability IDs affect each package version.
-//  2. GET /v1/vulns/{id}: the full record of each of those IDs.
-//
-// Flatcar images ship Go and Rust binaries that Gentoo's GLSAs don't
-// cover, so OSV.dev fills that gap: Match uses Query for them, and
-// the diff command uses Get to fetch curl's own advisories.
+// (https://google.github.io/osv.dev/api/), the vulnerability source for Go
+// modules and Rust crates. See README.md.
 package osv
 
 import (

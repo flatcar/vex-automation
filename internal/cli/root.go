@@ -1,35 +1,7 @@
-// Package cli implements the flatcar-vex commands. It is the only package
-// that ties the others together, so it is the place to start reading.
-// docs/architecture.md explains the same flow and the reasons behind it.
-//
-// generate answers "which known vulnerabilities affect this release?":
-//
-//	sbom.Load       read the release's SBOM and sort its packages by the
-//	                source that can check them
-//	glsa.LoadDir    read Gentoo's advisories (downloaded by sync-glsa)
-//	glsa.Match   check ebuild packages against the GLSA version ranges
-//	osv.Match    check golang/cargo packages against OSV.dev (network)
-//	vexgen.Build    write one OpenVEX statement per vulnerability
-//
-// diff answers "what did the newer release fix?", to draft the release
-// notes. It loads and matches two SBOMs the same way, against the same
-// advisories, so that any change in the result comes from the releases
-// and not from the data. Then:
-//
-//	osv.ApplyCurlAdvisories  correct curl's GLSA findings (too coarse)
-//	diff.Compute               classify each (vulnerability, package) pair
-//	diff.FormatChangelog       optionally render the fixed ones as Markdown
-//
-// sync-glsa (glsa.Sync) clones or updates the advisory directory that
-// generate and diff read with --glsa-dir.
-//
-// All steps share one rule: something that wasn't checked must not look
-// like "not affected". A version that can't be evaluated becomes
-// under_investigation. The "tooling" field of the OpenVEX document and of
-// the diff JSON records when OSV.dev was off or GLSA files didn't parse.
-// The diff JSON also lists packages no source covers under "not_checked";
-// generate only logs them (visible with --verbose). The changelog is plain
-// release-notes text and carries none of this.
+// Package cli implements the flatcar-vex commands (sync-glsa, generate and
+// diff). It is the only package that ties the others together, so start
+// reading here. README.md in this directory explains the flow, and
+// internal/README.md the design.
 package cli
 
 import (

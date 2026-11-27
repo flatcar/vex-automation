@@ -72,6 +72,8 @@ every case.
 | 9 | **License: Apache-2.0** (already resolved, not open) | The `vex-automation` repo scaffold already ships an Apache-2.0 `LICENSE` file. [`hello-go`](https://github.com/John15321/hello-go)'s own MIT license needs to be dropped when adapting the template — the repo's existing Apache-2.0 wins, and it also matches `go-vex`'s license. |
 | 10 | **OSV.dev integration (Future Phase Candidate #1) implemented, on by default (`--osv=false` to opt out)**, no local version-range matching | Each `querybatch` query is package+exact-version, so any vulnerability ID OSV.dev returns already applies (unlike GLSA, there's no "is this version in range" step or "fixed" case). `Finding.GLSAID` was generalized to `Finding.Source`/`Finding.RefID` so `vexgen`'s action-statement text stays correct across mixed GLSA+OSV.dev findings. It was first opt-in because it needs live network access, but a GLSA-only default silently left ~1,000 golang packages unchecked, so it is now on by default; `--osv=false` remains for offline runs and is recorded in the document's `tooling` field. Kernel-CVE-feed and oss-security (candidates #2 and a related later addition) remain deferred. See [`docs/multi-source-proposal.md`](./multi-source-proposal.md) for the full design. |
 | 11 | **`diff` subcommand compares two release SBOMs and drafts the "Security fixes" changelog**, tested against real release notes | Both SBOMs are matched with the same GLSA checkout and one OSV.dev query, then each CVE and package pair is bucketed (`fixed`, `removed`, `introduced`, `still_affected`, `review`). The hand-written notes of real release pairs (`internal/cli/testdata/releases.json`) are the test oracle: every listed CVE the data sources can reach must come out `fixed`, and the rest are documented known misses (no GLSA or OSV.dev record yet, GLSAs that only mark a later version as fixed, Go toolchain-only records, modules still vendored by another binary). Kernel, podman and incus CVEs are out of scope, since another pipeline produces them. Gentoo's curl GLSAs bundle years of CVEs under one range, so curl GLSA findings are rechecked against curl's own per-CVE advisories on OSV.dev; on the alpha pair this cut the curl CVEs not in the notes from 39 to 3 without losing any that are. |
+| 12 | **Packages organised by domain, one package per vulnerability source** (`internal/source/glsa`, `internal/source/osv`), with the shared `Finding` type in `internal/vuln` | Each source owns everything about its data (fetching, parsing, matching), so adding a source means adding one package that returns findings, and outputs (`vexgen`, `diff`) never depend on how a source works. Interfaces are not introduced until a second implementation needs one. Design notes live in a short README per package instead of one long document. |
+| 13 | **`sync-glsa` uses go-git, not the `git` binary** | Runners and user machines need no `git` install, the clone is shallow, local changes are discarded, and the result records the exact upstream commit the advisories came from. Local repository paths still need `git`, because go-git reads them through `git upload-pack`. |
 
 ---
 
@@ -122,17 +124,17 @@ flowchart TD
 
     subgraph Repo["📦 vex-automation repo"]
         subgraph CmdLayer["cmd/flatcar-vex/"]
-            MAIN["main.go — entrypoint"]
+            MAIN["main.go: entrypoint"]
         end
         subgraph InternalLayer["internal/"]
-            CLI_PKG["cli/ — cobra subcommands"]
-            SBOM_PKG["sbom/ — fetch + parse SPDX"]
-            GLSA_PKG["glsa/ — parse GLSA XML"]
-            GLSASYNC_PKG["glsasync/ — clone/update GLSA mirror"]
-            PORTAGE_PKG["portage/ — Portage version comparison"]
-            MATCH_PKG["match/ — version-range + OSV.dev matching"]
-            OSV_PKG["osv/ — OSV.dev API client"]
-            VEXGEN_PKG["vexgen/ — build via go-vex"]
+            CLI_PKG["cli/: cobra subcommands"]
+            SBOM_PKG["sbom/: parse SPDX, sort by ecosystem"]
+            VULN_PKG["vuln/: Finding + VEX Status"]
+            GLSA_PKG["source/glsa/: sync, parse + match GLSAs"]
+            OSV_PKG["source/osv/: OSV.dev client + matching"]
+            PORTAGE_PKG["portage/: Portage version comparison"]
+            VEXGEN_PKG["vexgen/: build via go-vex"]
+            DIFF_PKG["diff/: compare releases, changelog"]
         end
         GOVEX["github.com/openvex/go-vex<br/>(external dependency)"]
     end
@@ -146,8 +148,10 @@ flowchart TD
     POLL --> WF1
     WF1 --> MAIN
     MAIN --> CLI_PKG
-    CLI_PKG --> SBOM_PKG & GLSA_PKG & GLSASYNC_PKG & MATCH_PKG & VEXGEN_PKG
-    MATCH_PKG --> PORTAGE_PKG & OSV_PKG
+    CLI_PKG --> SBOM_PKG & GLSA_PKG & OSV_PKG & VEXGEN_PKG & DIFF_PKG
+    GLSA_PKG --> PORTAGE_PKG
+    GLSA_PKG & OSV_PKG --> VULN_PKG
+    VEXGEN_PKG & DIFF_PKG --> VULN_PKG
     VEXGEN_PKG --> GOVEX
     WF1 --> COMMIT["Commit/PR new VEX file<br/>into output location"]
 
@@ -157,7 +161,7 @@ flowchart TD
     classDef ext fill:#fefce8,stroke:#ca8a04,color:#713f12
 
     class POLL trigger
-    class MAIN,CLI_PKG,SBOM_PKG,GLSA_PKG,GLSASYNC_PKG,PORTAGE_PKG,MATCH_PKG,OSV_PKG,VEXGEN_PKG repo
+    class MAIN,CLI_PKG,SBOM_PKG,VULN_PKG,GLSA_PKG,OSV_PKG,PORTAGE_PKG,VEXGEN_PKG,DIFF_PKG repo
     class WF1,WF2,WF3,COMMIT ci
     class GOVEX ext
 ```
@@ -214,20 +218,22 @@ initial `affected` set to roll forward from. No history before that point is tou
 | Dev tooling | Go 1.24+ `tool` directives in `go.mod` — no global installs | [`hello-go`](https://github.com/John15321/hello-go) template |
 | CI orchestration | Thin GitHub Actions (`lint.yml`, `tests.yml`, `release.yml` reused as-is; new `update.yml` for the actual VEX pipeline) | [`hello-go`](https://github.com/John15321/hello-go) + this plan |
 
-**Planned repo layout** (adapted from [`hello-go`](https://github.com/John15321/hello-go)):
+**Repo layout** (adapted from [`hello-go`](https://github.com/John15321/hello-go)):
 
 ```
 vex-automation/
 ├── cmd/flatcar-vex/main.go          entrypoint
 ├── internal/
-│   ├── cli/                         cobra subcommands (generate, sync-glsa, ...)
+│   ├── README.md                    how the tool works; each package has its own README
+│   ├── cli/                         cobra subcommands (generate, diff, sync-glsa)
 │   ├── sbom/                        parse SPDX SBOM (ebuild + golang/cargo packages)
-│   ├── glsa/                        parse GLSA XML corpus
-│   ├── glsasync/                    clone/update the local GLSA mirror
+│   ├── vuln/                        Finding and VEX Status, shared by sources and outputs
+│   ├── source/
+│   │   ├── glsa/                    sync (go-git), parse and match Gentoo GLSAs
+│   │   └── osv/                     OSV.dev client and matching, curl recheck
 │   ├── portage/                     Portage version-range comparison
-│   ├── match/                       GLSA + OSV.dev matching logic
-│   ├── osv/                         OSV.dev API client
-│   └── vexgen/                      build OpenVEX docs via go-vex
+│   ├── vexgen/                      build OpenVEX docs via go-vex
+│   └── diff/                        compare two releases, draft the changelog
 ├── docs/
 │   ├── current-state.md             (existing)
 │   ├── multi-source-proposal.md     multi-source (OSV.dev, kernel-CVE, ...) design

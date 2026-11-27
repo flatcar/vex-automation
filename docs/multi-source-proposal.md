@@ -5,7 +5,9 @@
 > `internal/kernelcve` and `internal/osssecurity` remain deferred, not committed to any phase.
 > The rest of this document is preserved as originally written for its design rationale; only
 > the diagrams and tables directly describing OSV.dev's status have been updated to reflect
-> that it is now implemented.
+> that it is now implemented. Package paths here predate the layout in Decision Log #12:
+> `internal/glsa` and `internal/match` became `internal/source/glsa`, `internal/osv` became
+> `internal/source/osv`, and a new source would go under `internal/source/`.
 
 > Companion to [`plan.md`](./plan.md) (Decision Log #2, Future Phase candidates §7, Open
 > Question #8) and [`current-state.md`](./current-state.md). GLSA-based matching (Phase 1)

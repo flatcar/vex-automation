@@ -28,8 +28,8 @@ proof-of-concept that derives VEX statements purely from data Flatcar already pu
 See [`docs/current-state.md`](./docs/current-state.md) for how Flatcar's existing
 CVE/GLSA handling works today, and [`docs/plan.md`](./docs/plan.md) for the phased design
 of this automation (Phase 1 PoC scope, architecture, and future-phase candidates).
-Start with [`docs/architecture.md`](./docs/architecture.md) for what the tool does, how and
-why.
+Start with [`internal/README.md`](./internal/README.md) for what the tool does, how and
+why; each package under `internal/` has a short README of its own.
 
 This repository is maintained by the Flatcar community and contributors. Development and design decisions are guided by the principles of transparency, modularity, and collaboration.
 
@@ -166,7 +166,7 @@ A range boundary at Flatcar's own NSS version is only trusted for the usual `lt 
 pair without a revision, assuming X is Gentoo's first bundle for that NSS release (a fix made
 by a later date-only bump can't be told apart from the GLSA). Any other boundary there, such as
 a revision bump, and any range that can't be translated is reported as `under_investigation`. Further
-exceptions go in `internal/match/versionscheme.go`.
+exceptions go in `internal/source/glsa/versionscheme.go`.
 
 `generate` fails on an SBOM that isn't SPDX or has no matchable package (no ebuild package
 at all with `--osv=false`), and on any GLSA

@@ -1,13 +1,7 @@
-// Package diff compares the vulnerability findings of two SBOMs (an older
-// and a newer Flatcar release) matched against the same vulnerability data,
-// and classifies each (vulnerability, package) pair as fixed, removed,
-// introduced, still affected or needing review. It is pure logic: loading
-// SBOMs and running the matchers is up to the caller (cli.runDiff).
-//
-// Its main use is drafting the "Security fixes" section of the release
-// notes (FormatChangelog), so it errs towards "review" whenever a side
-// couldn't be fully checked: a wrong "fixed" line would be published as a
-// claim about the release.
+// Package diff compares the findings of two Flatcar releases, classifying
+// each (vulnerability, package) pair as fixed, removed, introduced, still
+// affected or needing review, and drafts the "Security fixes" release
+// notes. See README.md.
 package diff
 
 import (

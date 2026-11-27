@@ -1,10 +1,5 @@
-// Package vexgen turns match findings into an OpenVEX document, using the
-// official github.com/openvex/go-vex library.
-//
-// This is the last step of the generate command and its whole point: an
-// OpenVEX document tells users and their scanners, per CVE, whether this
-// Flatcar release is affected, fixed, not affected or still being looked
-// at, so they don't have to work it out from the SBOM themselves.
+// Package vexgen turns vulnerability findings into an OpenVEX document,
+// using the official github.com/openvex/go-vex library. See README.md.
 package vexgen
 
 import (

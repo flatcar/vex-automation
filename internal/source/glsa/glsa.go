@@ -1,11 +1,7 @@
-// Package glsa reads Gentoo Linux Security Advisories (GLSAs) from a
-// local directory of GLSA XML files. Only the fields needed to match an
-// advisory against installed versions are read; the full format is
-// described in https://www.gentoo.org/glep/glep-0058.html.
-//
-// Flatcar is built from Gentoo ebuilds, so Gentoo's advisories apply to
-// its ebuild packages. The directory usually comes from the sync-glsa
-// command (Sync), and the advisories go to Match.
+// Package glsa syncs, reads and matches Gentoo Linux Security Advisories
+// (GLSAs), the vulnerability source for Flatcar's ebuild packages. The file
+// format is described in https://www.gentoo.org/glep/glep-0058.html. See
+// README.md.
 package glsa
 
 import (

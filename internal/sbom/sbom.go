@@ -1,15 +1,6 @@
-// Package sbom reads the SPDX SBOMs that Flatcar publishes for each image
-// and sorts their packages by ecosystem: Gentoo ebuilds, which Gentoo's
-// GLSAs cover, and Go modules and Rust crates compiled into binaries, which
-// OSV.dev covers.
-//
-// The ecosystem comes from the package's purl, e.g.
-// "pkg:ebuild/sys-apps/systemd@255.4-r2" or "pkg:golang/<module>@<version>".
-//
-// This is the first step of both generate and diff: the SBOM is the only
-// record of what a release ships, and Document's three lists decide what
-// gets checked (Ebuilds, Modules) and what gets reported as unchecked
-// (Skipped).
+// Package sbom reads the SPDX SBOMs that Flatcar publishes and sorts their
+// packages by ecosystem, which decides which vulnerability source checks
+// them. See README.md.
 package sbom
 
 import (
