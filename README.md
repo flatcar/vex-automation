@@ -126,7 +126,8 @@ Useful flags:
   existing `--dest` re-points it at the new remote. A local repository path also works, but
   needs git installed. Credentials in an https URL are used but not stored in the mirror's
   `.git/config`. ssh URLs authenticate through ssh-agent and `known_hosts` only; if you
-  need git credential helpers or a custom ssh command, clone with git yourself (below).
+  need git credential helpers, `insteadOf` rewrites or a custom ssh command, clone with
+  git yourself (below).
 - `--timeout` – cap how long the clone/update is allowed to run before giving up (default `5m`).
 
 You can also skip `sync-glsa` and clone the repository yourself with

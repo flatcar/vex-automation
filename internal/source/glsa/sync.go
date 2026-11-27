@@ -1,6 +1,7 @@
 package glsa
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	format "github.com/go-git/go-git/v5/plumbing/format/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -148,6 +150,7 @@ func (s syncer) update(ctx context.Context, repo *git.Repository) error {
 	s.step("Fetching updates from %s into %s...", redact(s.repoURL), s.dest)
 	err = repo.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
+		RemoteURL:  s.remoteURL, // not origin's URL, which rewrite rules may change
 		Auth:       s.auth,
 		RefSpecs:   []config.RefSpec{config.RefSpec("+HEAD:" + fetchedHead)},
 		Depth:      1,
@@ -226,19 +229,24 @@ func (s syncer) terminal() io.Writer {
 }
 
 // setOrigin points the origin remote at url, like "git remote set-url",
-// keeping any other settings it has, or adds it if missing.
+// keeping any other settings it has, or adds it if missing. It edits the
+// raw config and parses it again because go-git writes back the URL it
+// read, not a new one, when a url.*.insteadOf rule matched that URL.
 func setOrigin(repo *git.Repository, url string) error {
 	cfg, err := repo.Config()
 	if err != nil {
 		return err
 	}
-	origin, ok := cfg.Remotes["origin"]
-	if !ok {
-		origin = &config.RemoteConfig{Name: "origin"}
-		cfg.Remotes["origin"] = origin
+	cfg.Raw.Section("remote").Subsection("origin").SetOption("url", url)
+	var raw bytes.Buffer
+	if err := format.NewEncoder(&raw).Encode(cfg.Raw); err != nil {
+		return err
 	}
-	origin.URLs = []string{url}
-	return repo.SetConfig(cfg)
+	updated := config.NewConfig()
+	if err := updated.Unmarshal(raw.Bytes()); err != nil {
+		return err
+	}
+	return repo.SetConfig(updated)
 }
 
 // countLocalChanges counts the files that differ from the checked-out

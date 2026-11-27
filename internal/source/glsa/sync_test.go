@@ -3,6 +3,7 @@ package glsa
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -791,6 +792,54 @@ func TestSyncKeepsOriginSettings(t *testing.T) {
 	}
 	if !strings.Contains(string(gitConfig), "tagopt = --no-tags") {
 		t.Errorf("origin lost its tagopt setting:\n%s", gitConfig)
+	}
+}
+
+func TestSyncIgnoresURLRewritesOnRepoChange(t *testing.T) {
+	oldServerHits := 0
+	oldServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		oldServerHits++
+		http.Error(w, "broken", http.StatusInternalServerError)
+	}))
+	t.Cleanup(oldServer.Close)
+	var gotUser string
+	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, _, _ = r.BasicAuth()
+		http.Error(w, "broken", http.StatusInternalServerError)
+	}))
+	t.Cleanup(newServer.Close)
+
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	// Local rules that rewrite both the current origin and the new
+	// repository to the old server.
+	configPath := filepath.Join(dest, ".git", "config")
+	gitConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := fmt.Sprintf("[url %q]\n\tinsteadOf = %s\n[url %q]\n\tinsteadOf = %s\n",
+		oldServer.URL+"/a", upstream, oldServer.URL+"/b", newServer.URL)
+	if err := os.WriteFile(configPath, append(gitConfig, rules...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	repoURL := strings.Replace(newServer.URL, "://", "://bot:s3cret@", 1) + "/glsa.git"
+	if _, err := Sync(context.Background(), dest, repoURL, nil); err == nil {
+		t.Fatal("expected an error from a failing server")
+	}
+	if oldServerHits != 0 || gotUser != "bot" {
+		t.Errorf("old server got %d requests, new server got user %q; want 0 and bot", oldServerHits, gotUser)
+	}
+	gitConfig, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gitConfig), "url = "+newServer.URL+"/glsa.git") {
+		t.Errorf("origin should point at %s/glsa.git:\n%s", newServer.URL, gitConfig)
 	}
 }
 
