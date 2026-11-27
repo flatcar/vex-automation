@@ -770,28 +770,29 @@ func TestSyncKeepsOriginSettings(t *testing.T) {
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("Sync (clone): %v", err)
 	}
-	repo, err := git.PlainOpen(dest)
+	configPath := filepath.Join(dest, ".git", "config")
+	gitConfig, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := repo.Config()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Raw.Section("remote").Subsection("origin").SetOption("tagopt", "--no-tags")
-	if err := repo.SetConfig(cfg); err != nil {
+	settings := "[remote \"origin\"]\n\ttagopt = --no-tags\n\tpushurl = https://push.example/glsa.git\n"
+	if err := os.WriteFile(configPath, append(gitConfig, settings...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("Sync (update): %v", err)
 	}
-	gitConfig, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
+	gitConfig, err = os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(gitConfig), "tagopt = --no-tags") {
 		t.Errorf("origin lost its tagopt setting:\n%s", gitConfig)
+	}
+	if !strings.Contains(string(gitConfig), "pushurl = https://push.example/glsa.git") ||
+		strings.Count(string(gitConfig), "\turl = ") != 1 {
+		t.Errorf("origin should keep one url and its separate pushurl:\n%s", gitConfig)
 	}
 }
 

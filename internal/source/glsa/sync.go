@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -21,6 +22,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	"github.com/go-git/go-git/v5/storage/filesystem"
 	"golang.org/x/term"
 )
 
@@ -229,10 +231,15 @@ func (s syncer) terminal() io.Writer {
 }
 
 // setOrigin points the origin remote at url, like "git remote set-url",
-// keeping any other settings it has, or adds it if missing. It edits the
-// raw config and parses it again because go-git writes back the URL it
-// read, not a new one, when a url.*.insteadOf rule matched that URL.
+// keeping any other settings it has, or adds it if missing. It writes the
+// config file as read, with only that line changed, because go-git's own
+// SetConfig rewrites remotes: it turns a pushurl into an extra url, and
+// keeps the old url when a url.*.insteadOf rule matched it.
 func setOrigin(repo *git.Repository, url string) error {
+	storage, ok := repo.Storer.(*filesystem.Storage)
+	if !ok {
+		return errors.New("the repository is not stored on disk")
+	}
 	cfg, err := repo.Config()
 	if err != nil {
 		return err
@@ -242,11 +249,7 @@ func setOrigin(repo *git.Repository, url string) error {
 	if err := format.NewEncoder(&raw).Encode(cfg.Raw); err != nil {
 		return err
 	}
-	updated := config.NewConfig()
-	if err := updated.Unmarshal(raw.Bytes()); err != nil {
-		return err
-	}
-	return repo.SetConfig(updated)
+	return util.WriteFile(storage.Filesystem(), "config", raw.Bytes(), 0o644)
 }
 
 // countLocalChanges counts the files that differ from the checked-out
