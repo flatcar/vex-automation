@@ -34,7 +34,7 @@ func TestRunAffected(t *testing.T) {
 		{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 	}
 
-	findings := Run(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
 
 	if len(findings) != 2 {
 		t.Fatalf("got %d findings, want 2 (one per CVE): %+v", len(findings), findings)
@@ -61,7 +61,7 @@ func TestRunFixed(t *testing.T) {
 		{Category: "sys-fs", Name: "fuse", Version: "3.18.1", PURL: "pkg:ebuild/sys-fs/fuse@3.18.1"},
 	}
 
-	findings := Run(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
 
 	if len(findings) != 2 {
 		t.Fatalf("got %d findings, want 2", len(findings))
@@ -78,7 +78,7 @@ func TestRunNoMatchingPackage(t *testing.T) {
 		{Category: "sys-apps", Name: "systemd", Version: "255.4-r2", PURL: "pkg:ebuild/sys-apps/systemd@255.4-r2"},
 	}
 
-	findings := Run(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0 for an unrelated package", len(findings))
 	}
@@ -91,7 +91,7 @@ func TestRunArchMismatch(t *testing.T) {
 	g := fuseGLSA()
 	g.Packages[0].Arch = "arm64"
 
-	findings := Run(pkgs, []glsa.GLSA{g}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{g}, "amd64")
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0 when GLSA arch doesn't match", len(findings))
 	}
@@ -104,7 +104,7 @@ func TestRunUnparseableVersionIsUnderInvestigation(t *testing.T) {
 		{Category: "sys-fs", Name: "fuse", Version: "not-a-version!!", PURL: "pkg:ebuild/sys-fs/fuse@bogus"},
 	}
 
-	findings := Run(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
 	if len(findings) != 2 {
 		t.Fatalf("got %d findings, want 2: %+v", len(findings), findings)
 	}
@@ -122,7 +122,7 @@ func TestRunGLSAWithNoCVEsUsesGLSAID(t *testing.T) {
 	g := fuseGLSA()
 	g.CVEs = nil
 
-	findings := Run(pkgs, []glsa.GLSA{g}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{g}, "amd64")
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1 for a GLSA with no CVE references: %+v", len(findings), findings)
 	}
@@ -491,22 +491,24 @@ func TestRunOSVQueriesNormalizedModuleAndVersion(t *testing.T) {
 		{Category: "golang", Name: "github.com/golang-jwt/jwt/v4", Version: "v4.5.1", PURL: "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4"},
 		{Category: "golang", Name: "stdlib", Version: "1.25.3", PURL: "pkg:golang/stdlib@1.25.3"},
 		{Category: "golang", Name: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", Version: "v1.5.0", PURL: "pkg:golang/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.0"},
+		{Category: "cargo", Name: "smallvec", Version: "1.6.0", PURL: "pkg:cargo/smallvec@1.6.0"},
 	}
 	client := newOSVTestClient(t,
 		map[string][]string{
 			"pkg:golang/github.com/golang-jwt/jwt/v4@v4.5.1":                     {"GO-1"},
 			"pkg:golang/stdlib@1.25.3":                                           {"GO-2"},
 			"pkg:golang/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.0": {"GO-3"},
+			"pkg:cargo/smallvec@1.6.0":                                           {"RUSTSEC-1"},
 		},
-		map[string][]string{"GO-1": {"CVE-2026-1"}, "GO-2": {"CVE-2026-2"}, "GO-3": {"CVE-2024-35255"}},
+		map[string][]string{"GO-1": {"CVE-2026-1"}, "GO-2": {"CVE-2026-2"}, "GO-3": {"CVE-2024-35255"}, "RUSTSEC-1": {"CVE-2021-25900"}},
 	)
 
 	findings, err := RunOSV(context.Background(), pkgs, client)
 	if err != nil {
 		t.Fatalf("RunOSV returned error: %v", err)
 	}
-	if len(findings) != 3 {
-		t.Fatalf("got %d findings, want 3: %+v", len(findings), findings)
+	if len(findings) != 4 {
+		t.Fatalf("got %d findings, want 4: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
 		if f.CVE == "CVE-2026-1" && f.Package.PURL != "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4" {
@@ -531,7 +533,7 @@ func TestRunOSVNoVulnerabilities(t *testing.T) {
 }
 
 func TestRunOSVEmptyPackages(t *testing.T) {
-	findings, err := RunOSV(context.Background(), nil, osv.NewClient())
+	findings, err := RunOSV(context.Background(), nil, &osv.Client{})
 	if err != nil {
 		t.Fatalf("RunOSV returned error: %v", err)
 	}
@@ -642,5 +644,24 @@ func TestRunOSVPropagatesCVEsAcrossAliasGroups(t *testing.T) {
 	want := []string{"v1.0.0 CVE-2026-1 GHSA-aaaa", "v1.1.0 CVE-2026-1 GO-2026-1"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("findings = %v, want %v", got, want)
+	}
+}
+
+// Advisory entries may share one backing array. Evaluating one entry must
+// not overwrite another entry's ranges.
+func TestEvaluateDoesNotModifyAdvisoryRanges(t *testing.T) {
+	shared := make([]glsa.VersionRange, 2, 3)
+	shared[0] = glsa.VersionRange{Op: "lt", Version: "2.0"}
+	shared[1] = glsa.VersionRange{Op: "lt", Version: "5.0"}
+	other := shared[1]
+	affected := glsa.AffectedPackage{
+		Vulnerable: shared[:1],
+		Unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.0"}},
+	}
+
+	evaluate("1.0", affected)
+
+	if shared[1] != other {
+		t.Errorf("evaluate overwrote a shared range: got %+v, want %+v", shared[1], other)
 	}
 }

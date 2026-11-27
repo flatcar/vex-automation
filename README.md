@@ -28,6 +28,8 @@ proof-of-concept that derives VEX statements purely from data Flatcar already pu
 See [`docs/current-state.md`](./docs/current-state.md) for how Flatcar's existing
 CVE/GLSA handling works today, and [`docs/plan.md`](./docs/plan.md) for the phased design
 of this automation (Phase 1 PoC scope, architecture, and future-phase candidates).
+Start with [`docs/architecture.md`](./docs/architecture.md) for what the tool does, how and
+why.
 
 This repository is maintained by the Flatcar community and contributors. Development and design decisions are guided by the principles of transparency, modularity, and collaboration.
 
@@ -84,7 +86,7 @@ curl -LO https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_prod
 #### 2. Sync the GLSA corpus
 
 `sync-glsa` clones Gentoo's GLSA advisory corpus into a local directory. Run it once to
-fetch everything, and run it again any time later to fast-forward to the latest advisories
+fetch everything, and run it again any time later to update to the latest advisories
 in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step):
 
 ```console

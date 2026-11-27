@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"time"
 
@@ -10,9 +9,6 @@ import (
 	"github.com/flatcar/vex-automation/internal/glsasync"
 )
 
-// newSyncGLSACmd builds the "sync-glsa" subcommand: a convenience wrapper
-// so a user doesn't have to manually locate or maintain their own copy of
-// the upstream GLSA corpus before running "generate --glsa-dir".
 func newSyncGLSACmd() *cobra.Command {
 	var (
 		dest    string
@@ -23,7 +19,7 @@ func newSyncGLSACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "sync-glsa",
 		Short: "Download or update a local mirror of the upstream Gentoo GLSA corpus",
-		Long: `sync-glsa clones (on first run) or fast-forwards (on later runs) a local
+		Long: `sync-glsa clones (on first run) or updates (on later runs) a local
 directory containing every upstream Gentoo GLSA *.xml advisory, so you don't
 have to source or keep one up to date by hand before running "generate
 --glsa-dir".
@@ -33,27 +29,13 @@ It shells out to "git" against the same corpus Gentoo publishes at
 re-fetching or re-parsing individual files itself.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-			if timeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, timeout)
-				defer cancel()
-			}
-			res, err := glsasync.Sync(ctx, dest, repo, cmd.ErrOrStderr())
+			ctx, cancel := withTimeout(cmd.Context(), timeout)
+			defer cancel()
+			result, err := glsasync.Sync(ctx, dest, repo, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			switch {
-			case res.Cloned:
-				_, err = fmt.Fprintf(out, "Cloned GLSA mirror at %s (%d advisories, %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
-			case res.OldCommit == "":
-				_, err = fmt.Fprintf(out, "Updated GLSA mirror at %s (%d advisories, now at %s)\n", res.Dest, res.FileCount, short(res.NewCommit))
-			case res.OldCommit == res.NewCommit:
-				_, err = fmt.Fprintf(out, "GLSA mirror at %s is already up to date (%d advisories)\n", res.Dest, res.FileCount)
-			default:
-				_, err = fmt.Fprintf(out, "Updated GLSA mirror at %s (%d advisories, %s -> %s)\n", res.Dest, res.FileCount, short(res.OldCommit), short(res.NewCommit))
-			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), describeSync(result))
 			return err
 		},
 	}
@@ -65,6 +47,21 @@ re-fetching or re-parsing individual files itself.`,
 	return cmd
 }
 
+// describeSync summarizes what Sync did in one line.
+func describeSync(result glsasync.Result) string {
+	switch {
+	case result.Cloned:
+		return fmt.Sprintf("Cloned GLSA mirror at %s (%d advisories, %s)", result.Dest, result.FileCount, short(result.NewCommit))
+	case result.OldCommit == "":
+		return fmt.Sprintf("Updated GLSA mirror at %s (%d advisories, now at %s)", result.Dest, result.FileCount, short(result.NewCommit))
+	case result.OldCommit == result.NewCommit:
+		return fmt.Sprintf("GLSA mirror at %s is already up to date (%d advisories)", result.Dest, result.FileCount)
+	default:
+		return fmt.Sprintf("Updated GLSA mirror at %s (%d advisories, %s -> %s)", result.Dest, result.FileCount, short(result.OldCommit), short(result.NewCommit))
+	}
+}
+
+// short abbreviates a commit hash for display.
 func short(commit string) string {
 	if len(commit) > 12 {
 		return commit[:12]

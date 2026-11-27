@@ -1,58 +1,30 @@
 package cli
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/vexgen"
 )
 
-// releaseNamePattern extracts a Flatcar group+version from one path
-// segment of an SBOM document's "name" field, e.g. "stable-4593.2.4-a1" ->
-// channel="stable", version="4593.2.4-a1". Any lowercase group name is
-// accepted, not only the release channels, so developer/nightly builds
-// (e.g. "developer-4628.0.0+nightly-20260101-2100-a1") keep their version.
-var releaseNamePattern = regexp.MustCompile(`^([a-z][a-z0-9_]*)-([0-9][^/]*)$`)
+type generateOptions struct {
+	sharedOptions
+	sbomPath  string
+	productID string
+	author    string
+}
 
-// defaultOSVTimeout bounds how long OSV.dev matching may take, mirroring
-// sync-glsa's DefaultTimeout convention: a network problem should fail fast
-// rather than hang forever.
-const defaultOSVTimeout = 5 * time.Minute
-
-// newGenerateCmd builds the "generate" subcommand: the most basic form of
-// flatcar-vex, taking a local SBOM file and a local GLSA directory and
-// producing an OpenVEX document.
 func newGenerateCmd() *cobra.Command {
-	var (
-		sbomPath        string
-		glsaDir         string
-		outPath         string
-		arch            string
-		productID       string
-		author          string
-		osvEnabled      bool
-		osvBaseURL      string
-		osvTimeout      time.Duration
-		allowGLSAErrors bool
-	)
-
+	var opts generateOptions
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate an OpenVEX document from a local SBOM and a local GLSA directory",
@@ -62,68 +34,31 @@ advisory, and writes an OpenVEX document with one statement per CVE (affected,
 fixed, not_affected or under_investigation) for this release.
 
 It also queries OSV.dev (https://osv.dev) for every golang/cargo package in
-the SBOM (the packages the GLSA corpus has no coverage for at all) and merges
-those findings into the same document. This requires network access; unlike
-GLSA there is no local corpus to sync first (see
-docs/multi-source-proposal.md for why OSV.dev's API doesn't need one). Pass
---osv=false to work offline; the document's "tooling" field then records
-that golang/cargo packages were not checked. Likewise, when
---allow-glsa-errors skips unparseable advisories, "tooling" records how
-many were skipped.
-
-This is the most basic PoC form described in docs/plan.md: no caching or
-rolling-forward logic is included here, only the core match and generate
-step.`,
+the SBOM, which the GLSA corpus doesn't cover, and merges those findings into
+the same document. This requires network access. Pass --osv=false to work
+offline; the document's "tooling" field then records that golang/cargo
+packages were not checked. Likewise, when --allow-glsa-errors skips
+unparseable advisories, "tooling" records how many were skipped.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runGenerate(cmd, generateOptions{
-				sbomPath:   sbomPath,
-				glsaDir:    glsaDir,
-				outPath:    outPath,
-				arch:       arch,
-				productID:  productID,
-				author:     author,
-				osvEnabled: osvEnabled,
-				osvBaseURL: osvBaseURL,
-				osvTimeout: osvTimeout,
-
-				allowGLSAErrors: allowGLSAErrors,
-			})
+			return runGenerate(cmd, opts)
 		},
 	}
-
-	cmd.Flags().StringVar(&sbomPath, "sbom", "", "path to a local SPDX SBOM JSON file (required)")
-	cmd.Flags().StringVar(&glsaDir, "glsa-dir", "", "path to a local directory containing GLSA *.xml files (required)")
-	cmd.Flags().StringVarP(&outPath, "output", "o", "", "output file path (default: stdout)")
-	cmd.Flags().StringVar(&arch, "arch", "amd64", "architecture to match GLSA entries against")
-	cmd.Flags().StringVar(&productID, "product-id", "", "product identifier for the VEX document (default: derived from the SBOM's document name)")
-	cmd.Flags().StringVar(&author, "author", "", "author field for the VEX document")
-	cmd.Flags().BoolVar(&osvEnabled, "osv", true, "match golang/cargo SBOM packages against OSV.dev (requires network access; --osv=false leaves them unchecked)")
-	cmd.Flags().StringVar(&osvBaseURL, "osv-base-url", osv.DefaultBaseURL, "OSV.dev API base URL (override for testing or a private mirror)")
-	cmd.Flags().DurationVar(&osvTimeout, "osv-timeout", defaultOSVTimeout, "maximum time to allow OSV.dev matching to run")
-	cmd.Flags().BoolVar(&allowGLSAErrors, "allow-glsa-errors", false, "continue with the remaining advisories when some GLSA files fail to parse, instead of failing")
-
+	opts.addFlags(cmd)
+	cmd.Flags().StringVar(&opts.sbomPath, "sbom", "", "path to a local SPDX SBOM JSON file (required)")
+	cmd.Flags().StringVar(&opts.productID, "product-id", "", "product identifier for the VEX document (default: derived from the SBOM's document name)")
+	cmd.Flags().StringVar(&opts.author, "author", "", "author field for the VEX document")
 	_ = cmd.MarkFlagRequired("sbom")
-	_ = cmd.MarkFlagRequired("glsa-dir")
-
 	return cmd
 }
 
-type generateOptions struct {
-	sbomPath   string
-	glsaDir    string
-	outPath    string
-	arch       string
-	productID  string
-	author     string
-	osvEnabled bool
-	osvBaseURL string
-	osvTimeout time.Duration
-
-	allowGLSAErrors bool
-}
-
+// runGenerate reads one SBOM, matches its packages against both
+// vulnerability sources and writes the findings as an OpenVEX document
+// (see the package documentation for the steps).
 func runGenerate(cmd *cobra.Command, opts generateOptions) error {
+	if err := opts.validate(); err != nil {
+		return err
+	}
 	doc, err := sbom.Load(opts.sbomPath)
 	if err != nil {
 		return err
@@ -133,173 +68,76 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return fmt.Errorf("SBOM %s has no ebuild package to match against GLSAs, and OSV.dev matching is disabled (--osv=false): nothing would be checked", opts.sbomPath)
 	}
 
-	glsas, skippedGLSAs, err := loadGLSAs(opts.glsaDir, opts.allowGLSAErrors)
+	glsas, skippedGLSAs, err := opts.loadGLSAs()
 	if err != nil {
 		return err
 	}
-
 	productID := opts.productID
 	if productID == "" {
-		productID, err = deriveProductID(doc.Name)
-		if err != nil {
+		if productID, err = deriveProductID(doc.Name); err != nil {
 			return err
 		}
 	}
 
-	findings := match.Run(doc.Packages, glsas, opts.arch)
-
-	if !opts.osvEnabled {
-		if len(doc.OSVPackages) > 0 {
-			slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
-				"packages", len(doc.OSVPackages))
-		}
-	} else {
-		if err := validateOSVFlags(opts.osvBaseURL, opts.osvTimeout); err != nil {
-			return err
-		}
+	// Both matchers return findings in the same form, so the document can
+	// be built from one combined list.
+	findings := match.RunGLSA(doc.Packages, glsas, opts.arch)
+	if opts.osvEnabled {
 		osvFindings, err := matchOSV(cmd, doc.OSVPackages, opts.osvBaseURL, opts.osvTimeout)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
 		findings = append(findings, osvFindings...)
+	} else if len(doc.OSVPackages) > 0 {
+		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
+			"packages", len(doc.OSVPackages))
 	}
 
 	vexDoc, err := vexgen.Build(findings, vexgen.Metadata{
 		Author:    opts.author,
 		ProductID: productID,
-		Tooling:   toolingOf("generate", opts.osvEnabled, skippedGLSAs),
+		Tooling:   opts.tooling("generate", skippedGLSAs),
 	})
 	if err != nil {
 		return err
 	}
-
-	out, err := json.MarshalIndent(vexDoc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding VEX document as JSON: %w", err)
-	}
-	out = append(out, '\n')
-
-	return writeOutput(cmd, opts.outPath, out)
+	return writeJSON(cmd, opts.outPath, vexDoc)
 }
 
-// loadGLSAs loads every advisory in dir. With allowErrors, unparseable
-// files are logged and skipped (their count is returned) as long as at
-// least one advisory could be parsed; otherwise any parse error fails.
-func loadGLSAs(dir string, allowErrors bool) ([]glsa.GLSA, int, error) {
-	glsas, err := glsa.LoadDir(dir)
-	var parseErr *glsa.ParseError
-	switch {
-	case errors.As(err, &parseErr) && allowErrors && len(glsas) > 0:
-		for _, e := range parseErr.Errs {
-			slog.Warn("skipping unparseable GLSA file", "error", e)
-		}
-		return glsas, len(parseErr.Errs), nil
-	case parseErr != nil && allowErrors:
-		return nil, 0, fmt.Errorf("no GLSA file in %s could be parsed: %w", dir, err)
-	case parseErr != nil:
-		return nil, 0, fmt.Errorf("%w (pass --allow-glsa-errors to continue without them)", err)
-	case err != nil:
-		return nil, 0, err
-	}
-	return glsas, 0, nil
-}
-
-// validateOSVFlags checks the OSV.dev flags shared by generate and diff.
-func validateOSVFlags(baseURL string, timeout time.Duration) error {
-	if timeout < 0 {
-		return fmt.Errorf("--osv-timeout must be >= 0 unless --osv=false")
-	}
-	if baseURL == "" {
-		return fmt.Errorf("--osv-base-url must not be empty unless --osv=false")
-	}
-	return nil
-}
-
-// toolingOf describes the sources behind a command's output. Disabled
-// OSV.dev matching and an incomplete GLSA corpus must be visible in the
-// output itself, not only in the logs.
-func toolingOf(command string, osvEnabled bool, skippedGLSAs int) string {
-	sources := "Gentoo GLSA, OSV.dev"
-	if !osvEnabled {
-		sources = "Gentoo GLSA only; OSV.dev disabled, golang/cargo packages not checked"
-	}
-	if skippedGLSAs > 0 {
-		sources += fmt.Sprintf("; incomplete GLSA corpus, unparseable files skipped: %d", skippedGLSAs)
-	}
-	return fmt.Sprintf("flatcar-vex %s (sources: %s)", command, sources)
-}
-
-// withOSVTimeout bounds ctx with --osv-timeout (0 means no extra bound).
-// context.WithTimeout keeps the earliest of the parent's existing deadline
-// (if any) and this one, so the flag stays effective even when ctx already
-// carries its own (possibly looser) deadline.
-func withOSVTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout > 0 {
-		return context.WithTimeout(ctx, timeout)
-	}
-	return ctx, func() {}
-}
-
-// matchOSV runs match.RunOSV against pkgs, bounded by timeout.
+// matchOSV matches pkgs against OSV.dev, giving up after timeout.
 func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]match.Finding, error) {
-	ctx, cancel := withOSVTimeout(cmd.Context(), timeout)
+	ctx, cancel := withTimeout(cmd.Context(), timeout)
 	defer cancel()
 	return match.RunOSV(ctx, pkgs, &osv.Client{BaseURL: baseURL})
 }
 
-// logSkipped summarizes, per reason, the SBOM packages that no
-// vulnerability source covers, so the coverage gap is visible.
-func logSkipped(skipped []sbom.SkippedPackage) {
-	byReason := map[string][]string{}
-	for _, sk := range skipped {
-		byReason[sk.Reason] = append(byReason[sk.Reason], sk.Name)
+// writeJSON writes value as indented JSON to path, or to stdout.
+func writeJSON(cmd *cobra.Command, path string, value any) error {
+	out, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding output as JSON: %w", err)
 	}
-	reasons := make([]string, 0, len(byReason))
-	for r := range byReason {
-		reasons = append(reasons, r)
-	}
-	sort.Strings(reasons)
-	for _, r := range reasons {
-		names := byReason[r]
-		sort.Strings(names)
-		slog.Info("SBOM packages not matched against any vulnerability source",
-			"reason", r, "count", len(names), "packages", strings.Join(names, ","))
-	}
+	return writeOutput(cmd, path, append(out, '\n'))
 }
 
-// deriveProductID builds a best-effort product identifier from an SBOM
-// document's "name" field, taken from the last path segment of the form
-// "<group>-<version>". See docs/plan.md §9, Open Question #1: the product
-// identifier scheme is still provisional; this is a placeholder good enough
-// for the PoC. It fails rather than falling back to a versionless ID, since
-// that would give documents for different builds the same product identity.
-func deriveProductID(sbomDocName string) (string, error) {
-	segments := strings.Split(sbomDocName, "/")
+// releaseName matches the part of an SBOM name that names the release:
+// "<group>-<version>", e.g. "stable-4593.2.4-a1" or
+// "developer-4628.0.0+nightly-20260101-2100-a1".
+var releaseName = regexp.MustCompile(`^([a-z][a-z0-9_]*)-([0-9][^/]*)$`)
+
+// deriveProductID builds the product ID from the last path segment of the
+// SBOM name that names a release. The product ID is what every VEX
+// statement applies to, so consumers use it to tell which release a
+// document is about. It fails rather than returning an ID
+// without a version, which would give different builds the same identity.
+// The ID scheme is provisional (docs/plan.md, open question 1).
+func deriveProductID(sbomName string) (string, error) {
+	segments := strings.Split(sbomName, "/")
 	for i := len(segments) - 1; i >= 0; i-- {
-		m := releaseNamePattern.FindStringSubmatch(segments[i])
-		if m == nil {
-			continue
-		}
-		channel, version := m[1], strings.ReplaceAll(m[2], "+", "%2B")
-		return fmt.Sprintf("pkg:generic/flatcar-container-linux@%s?channel=%s", version, channel), nil
-	}
-	return "", fmt.Errorf("cannot derive a product ID from SBOM document name %q; pass --product-id", sbomDocName)
-}
-
-// writeOutput writes data to path, or to cmd's stdout if path is empty.
-func writeOutput(cmd *cobra.Command, path string, data []byte) error {
-	if path == "" {
-		_, err := io.Copy(cmd.OutOrStdout(), bytes.NewReader(data))
-		return err
-	}
-
-	if dir := filepath.Dir(path); dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("creating output directory: %w", err)
+		if groups := releaseName.FindStringSubmatch(segments[i]); groups != nil {
+			channel, version := groups[1], strings.ReplaceAll(groups[2], "+", "%2B")
+			return fmt.Sprintf("pkg:generic/flatcar-container-linux@%s?channel=%s", version, channel), nil
 		}
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec // VEX output is not sensitive.
-		return fmt.Errorf("writing output file %q: %w", path, err)
-	}
-	return nil
+	return "", fmt.Errorf("cannot derive a product ID from SBOM document name %q; pass --product-id", sbomName)
 }

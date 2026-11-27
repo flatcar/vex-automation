@@ -13,9 +13,16 @@
 // return an error instead of silently guessing, so callers can decide how to
 // handle it (e.g. report it as under investigation) rather than emit an
 // incorrect VEX statement.
+//
+// GLSAs state which versions are vulnerable as ranges such as "lt 1.2.3",
+// so every GLSA verdict in package match comes down to Satisfies. Plain
+// semantic versioning can't be used instead: Gentoo versions have "-rN"
+// revisions, "_p"/"_rc" suffixes and letters ("1.0a") that it orders
+// differently or rejects.
 package portage
 
 import (
+	"cmp"
 	"fmt"
 	"regexp"
 	"strings"
@@ -55,25 +62,28 @@ type version struct {
 
 // parseVersion parses a Portage version string such as "255.4-r2".
 func parseVersion(s string) (version, error) {
-	m := versionPattern.FindStringSubmatch(s)
-	if m == nil {
+	groups := versionPattern.FindStringSubmatch(s)
+	if groups == nil {
 		return version{}, fmt.Errorf("%q is not a recognizable Portage version", s)
 	}
+	// For "1.2.3b_rc1_p2-r4": first "1", rest ".2.3", letter "b",
+	// suffixes "_rc1_p2", revision "4".
+	first, rest, letter, suffixes, revision := groups[1], groups[2], groups[3], groups[4], groups[5]
 
-	v := version{first: m[1], revision: m[5], original: s}
-	if m[2] != "" {
-		v.rest = strings.Split(m[2][1:], ".")
+	v := version{first: first, revision: revision, original: s}
+	if rest != "" {
+		v.rest = strings.Split(strings.TrimPrefix(rest, "."), ".")
 	}
-	if m[3] != "" {
-		v.letter = m[3][0]
+	if letter != "" {
+		v.letter = letter[0]
 	}
-	if m[4] != "" {
-		for _, part := range strings.Split(m[4][1:], "_") {
-			sm := suffixPattern.FindStringSubmatch(part)
-			if sm == nil {
+	if suffixes != "" {
+		for _, part := range strings.Split(strings.TrimPrefix(suffixes, "_"), "_") {
+			kindAndNumber := suffixPattern.FindStringSubmatch(part)
+			if kindAndNumber == nil {
 				return version{}, fmt.Errorf("%q: invalid suffix %q", s, part)
 			}
-			v.suffixes = append(v.suffixes, suffix{kind: sm[1], num: sm[2]})
+			v.suffixes = append(v.suffixes, suffix{kind: kindAndNumber[1], num: kindAndNumber[2]})
 		}
 	}
 	return v, nil
@@ -102,63 +112,66 @@ func Compare(a, b string) (int, error) {
 	return va.compare(vb), nil
 }
 
-// compare is a port of Portage's vercmp.
-func (v version) compare(o version) int {
-	if c := compareDigits(v.first, o.first); c != 0 {
-		return c
+// compare is a port of Portage's vercmp. It compares the parts of the two
+// versions from left to right; the first part that differs decides.
+func (v version) compare(other version) int {
+	steps := []func() int{
+		func() int { return compareDigits(v.first, other.first) },
+		func() int { return compareComponents(v.rest, other.rest) },
+		// A letter sorts above no letter (letter 0), so "1.0a" > "1.0".
+		func() int { return cmp.Compare(v.letter, other.letter) },
+		func() int { return compareSuffixes(v.suffixes, other.suffixes) },
+		func() int { return compareDigits(v.revision, other.revision) },
 	}
-
-	for i := 0; i < len(v.rest) || i < len(o.rest); i++ {
-		// A missing component sorts below any present one, so "1.0" < "1.0.0".
-		if i >= len(v.rest) {
-			return -1
-		}
-		if i >= len(o.rest) {
-			return 1
-		}
-		a, b := v.rest[i], o.rest[i]
-		var c int
-		if a[0] != '0' && b[0] != '0' {
-			c = compareDigits(a, b)
-		} else {
-			// Leading zero: compare as a decimal fraction, so "02" < "1".
-			width := max(len(a), len(b))
-			c = strings.Compare(padRight(a, width), padRight(b, width))
-		}
-		if c != 0 {
-			return c
+	for _, step := range steps {
+		if order := step(); order != 0 {
+			return order
 		}
 	}
+	return 0
+}
 
-	switch {
-	case v.letter == o.letter:
-	case v.letter == 0:
-		return -1
-	case o.letter == 0:
-		return 1
-	default:
-		return sign(int(v.letter) - int(o.letter))
+// compareComponents compares the dotted components after the first one.
+// A missing component sorts below any present one, so "1.0" < "1.0.0".
+func compareComponents(a, b []string) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if order := compareComponent(a[i], b[i]); order != 0 {
+			return order
+		}
 	}
+	return cmp.Compare(len(a), len(b))
+}
 
-	for i := 0; i < len(v.suffixes) || i < len(o.suffixes); i++ {
-		sa, sb := suffixAt(v.suffixes, i), suffixAt(o.suffixes, i)
+// compareComponent compares two components as integers, unless one has a
+// leading zero: then both are compared as decimal fractions, so "02" < "1".
+func compareComponent(a, b string) int {
+	if a[0] != '0' && b[0] != '0' {
+		return compareDigits(a, b)
+	}
+	width := max(len(a), len(b))
+	return strings.Compare(padRight(a, width), padRight(b, width))
+}
+
+// compareSuffixes compares "_suffix" lists such as "_rc1_p2": first by
+// kind (alpha < beta < pre < rc < p), then by number.
+func compareSuffixes(a, b []suffix) int {
+	for i := 0; i < len(a) || i < len(b); i++ {
+		sa, sb := suffixAt(a, i), suffixAt(b, i)
 		if sa.kind != sb.kind {
-			return sign(suffixValue[sa.kind] - suffixValue[sb.kind])
+			return cmp.Compare(suffixValue[sa.kind], suffixValue[sb.kind])
 		}
-		switch {
-		case sa.implicit && sb.implicit:
-		case sa.implicit:
+		// The implicit "_p-1" sorts below every real "_p" number.
+		if sa.implicit && !sb.implicit {
 			return -1
-		case sb.implicit:
+		}
+		if sb.implicit && !sa.implicit {
 			return 1
-		default:
-			if c := compareDigits(sa.num, sb.num); c != 0 {
-				return c
-			}
+		}
+		if order := compareDigits(sa.num, sb.num); order != 0 {
+			return order
 		}
 	}
-
-	return compareDigits(v.revision, o.revision)
+	return 0
 }
 
 // suffixAt returns s[i], or the implicit "_p-1" Portage uses for a missing
@@ -174,25 +187,11 @@ func suffixAt(s []suffix, i int) suffix {
 // strings of arbitrary length ("" counts as 0).
 func compareDigits(a, b string) int {
 	a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
-	if len(a) != len(b) {
-		return sign(len(a) - len(b))
-	}
-	return strings.Compare(a, b)
+	return cmp.Or(cmp.Compare(len(a), len(b)), strings.Compare(a, b))
 }
 
 func padRight(s string, width int) string {
 	return s + strings.Repeat("0", width-len(s))
-}
-
-func sign(n int) int {
-	switch {
-	case n < 0:
-		return -1
-	case n > 0:
-		return 1
-	default:
-		return 0
-	}
 }
 
 // Satisfies reports whether installed satisfies "installed <op> constraint",
@@ -221,37 +220,30 @@ func Satisfies(installed, op, constraint string) (bool, error) {
 		return false, err
 	}
 
-	switch op {
-	case "ge":
-		return vi.compare(vc) >= 0, nil
-	case "gt":
-		return vi.compare(vc) > 0, nil
-	case "le":
-		return vi.compare(vc) <= 0, nil
-	case "lt":
-		return vi.compare(vc) < 0, nil
-	case "eq":
-		return vi.compare(vc) == 0, nil
-	case "rge", "rgt", "rle", "rlt":
-		// Portage matches the base with a "~" atom, which requires the
-		// version text to be identical, so "1.010" is not "1.01".
-		if vi.base() != vc.base() {
-			return false, nil
-		}
-		c := compareDigits(vi.revision, vc.revision)
-		switch op {
-		case "rge":
-			return c >= 0, nil
-		case "rgt":
-			return c > 0, nil
-		case "rle":
-			return c <= 0, nil
-		default:
-			return c < 0, nil
-		}
-	default:
+	plainOp, revisionOnly := strings.CutPrefix(op, "r")
+	accepts, known := rangeOps[plainOp]
+	if !known || (revisionOnly && plainOp == "eq") {
 		return false, fmt.Errorf("unsupported range operator %q", op)
 	}
+	if !revisionOnly {
+		return accepts(vi.compare(vc)), nil
+	}
+	// Portage matches the base with a "~" atom, which requires the version
+	// text to be identical, so "1.010" is not "1.01".
+	if vi.base() != vc.base() {
+		return false, nil
+	}
+	return accepts(compareDigits(vi.revision, vc.revision)), nil
+}
+
+// rangeOps maps each plain GLSA range operator to the comparison results
+// (-1, 0 or 1 for installed vs. constraint) it accepts.
+var rangeOps = map[string]func(order int) bool{
+	"lt": func(order int) bool { return order < 0 },
+	"le": func(order int) bool { return order <= 0 },
+	"eq": func(order int) bool { return order == 0 },
+	"ge": func(order int) bool { return order >= 0 },
+	"gt": func(order int) bool { return order > 0 },
 }
 
 // globMatch implements Portage's "=*" match (lib/portage/dep, match_from_list):

@@ -1,439 +1,88 @@
-// Package match determines, for each installed package, whether it is
-// affected by or already fixed against known vulnerabilities: ebuild
-// packages against the GLSA corpus (Run), and golang/cargo packages against
-// OSV.dev (RunOSV).
+// Package match decides, for each installed package, which known
+// vulnerabilities affect it: ebuild packages against Gentoo's GLSAs
+// (RunGLSA), golang/cargo packages against OSV.dev (RunOSV).
+//
+// It sits in the middle of the pipeline: its input is the packages from
+// package sbom and the advisories from packages glsa and osv; its output,
+// a list of Findings, is all that package vexgen (generate) and package
+// diff (diff) look at. Both matchers produce the same Finding type so that
+// the steps after them don't need to know where a finding came from.
 package match
 
 import (
-	"context"
-	"log/slog"
-	"regexp"
+	"cmp"
 	"slices"
-	"sort"
-	"strings"
-	"unicode"
 
-	"github.com/flatcar/vex-automation/internal/glsa"
-	"github.com/flatcar/vex-automation/internal/osv"
-	"github.com/flatcar/vex-automation/internal/portage"
 	"github.com/flatcar/vex-automation/internal/sbom"
 )
 
-// Source identifies which vulnerability source a Finding came from, so
-// multiple sources can share the same Finding/vexgen pipeline without their
-// results being confused for one another.
+// Sources a Finding can come from.
 const (
 	SourceGLSA = "glsa"
 	SourceOSV  = "osv"
 )
 
-// Status is the VEX status of a single Finding. The values match the
-// OpenVEX status names.
+// Status is a VEX status, named as in OpenVEX.
 type Status string
 
 const (
 	// StatusAffected means the installed version is in a vulnerable range.
 	StatusAffected Status = "affected"
-	// StatusFixed means the installed version is in a range the source
-	// lists as unaffected, i.e. it already contains the fix.
+	// StatusFixed means the installed version contains the fix.
 	StatusFixed Status = "fixed"
-	// StatusNotAffected means the source lists the package, but the
-	// installed version is in none of its vulnerable or unaffected ranges,
+	// StatusNotAffected means the installed version is in no vulnerable range,
 	// e.g. it predates the vulnerable code.
 	StatusNotAffected Status = "not_affected"
-	// StatusUnderInvestigation means the installed version could not be
-	// evaluated against the source's ranges (unparseable version, unknown
-	// range operator, or a slot-restricted range whose applicability can't
-	// be determined from the SBOM).
+	// StatusUnderInvestigation means the version could not be evaluated;
+	// Finding.Note says why.
 	StatusUnderInvestigation Status = "under_investigation"
 )
 
-// StatusPrecedence orders statuses from most to least severe. When several
-// findings disagree about the same vulnerability (e.g. one copy of a
-// package fixed, another still affected), the most severe status wins.
-var StatusPrecedence = []Status{
-	StatusAffected,
-	StatusUnderInvestigation,
-	StatusFixed,
-	StatusNotAffected,
-}
+// StatusPrecedence lists the statuses from most to least severe. When
+// findings disagree about one vulnerability, the most severe one wins.
+var StatusPrecedence = []Status{StatusAffected, StatusUnderInvestigation, StatusFixed, StatusNotAffected}
 
-// Severity returns s's rank in StatusPrecedence, where 0 is the most
-// severe, or len(StatusPrecedence) for an unknown status.
+// Severity is s's position in StatusPrecedence (0 is the most severe).
 func Severity(s Status) int {
-	for i, p := range StatusPrecedence {
-		if p == s {
-			return i
-		}
+	if i := slices.Index(StatusPrecedence, s); i >= 0 {
+		return i
 	}
 	return len(StatusPrecedence)
 }
 
-// Finding is the result of matching a single installed package against a
-// single vulnerability referenced by one of the supported sources.
+// Finding says how one vulnerability affects one installed package,
+// according to one advisory.
+//
+// One vulnerability often gets several findings: several advisories name
+// it, or several packages (or versions of one package) ship it. Each
+// finding is kept separate here; vexgen and diff group them by CVE and
+// let the most severe status win (see StatusPrecedence).
 type Finding struct {
-	// CVE is the vulnerability identifier, e.g. "CVE-2026-33150". For
-	// sources where a CVE alias isn't available, this falls back to that
-	// source's own identifier: the OSV.dev ID (e.g. a GHSA ID), or
-	// "GLSA-<id>" for a GLSA that references no CVE.
+	// CVE is the vulnerability ID, and the key findings are grouped by
+	// later. Without a CVE it is the source's own ID: an OSV.dev ID, or
+	// "GLSA-<id>".
 	CVE string
-	// Source is which vulnerability source produced this Finding: one of
-	// SourceGLSA or SourceOSV.
+	// Source is SourceGLSA or SourceOSV.
 	Source string
-	// RefID is the source-specific advisory identifier: a GLSA ID (e.g.
-	// "202604-03") for SourceGLSA, or an OSV.dev vulnerability ID (e.g.
-	// "GHSA-xxxx-xxxx-xxxx") for SourceOSV.
-	RefID string
-	// Package is the installed package this finding is about.
+	// RefID is the advisory that produced the finding: a GLSA ID such as
+	// "202604-03", or an OSV.dev ID.
+	RefID   string
 	Package sbom.Package
-	// Status is the VEX status of Package with respect to CVE. OSV.dev
-	// findings are always StatusAffected (see RunOSV).
-	Status Status
-	// Note optionally explains Status, e.g. why a finding is under
-	// investigation. Empty for ordinary affected/fixed results.
+	Status  Status
+	// Note explains the status, e.g. why it is under investigation.
 	Note string
 }
 
-// Run matches every ebuild package in pkgs against every GLSA in glsas,
-// restricted to entries applicable to arch (e.g. "amd64"). It returns one
-// Finding per (CVE, package) pair where the GLSA's affected-package name
-// matches an installed package's category/name. A GLSA that references no
-// CVE is reported under the identifier "GLSA-<id>" instead of being dropped.
-//
-// A version comparison that can't be evaluated (e.g. an unparseable version
-// string) doesn't abort the run: it's logged and reported as
-// StatusUnderInvestigation, so the vulnerability stays visible in the VEX
-// document instead of silently disappearing.
-func Run(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
-	byCategoryName := make(map[string][]sbom.Package, len(pkgs))
-	for _, p := range pkgs {
-		byCategoryName[p.CategoryName()] = append(byCategoryName[p.CategoryName()], p)
-	}
-
-	var findings []Finding
-	for _, g := range glsas {
-		ids := g.CVEs
-		if len(ids) == 0 {
-			ids = []string{"GLSA-" + g.ID}
-		}
-
-		for _, ap := range g.Packages {
-			if !ap.MatchesArch(arch) {
-				continue
-			}
-
-			installed, ok := byCategoryName[ap.CategoryName]
-			if !ok {
-				continue // package not present in this SBOM at all
-			}
-
-			for _, pkg := range installed {
-				status, note := evaluatePackage(ap.CategoryName, pkg.Version, ap)
-				if status == StatusUnderInvestigation {
-					slog.Info("cannot evaluate GLSA ranges, reporting as under investigation",
-						"package", pkg.CategoryName(), "version", pkg.Version, "glsa", g.ID, "reason", note)
-				}
-
-				for _, id := range ids {
-					findings = append(findings, Finding{
-						CVE:     id,
-						Source:  SourceGLSA,
-						RefID:   g.ID,
-						Package: pkg,
-						Status:  status,
-						Note:    note,
-					})
-				}
-			}
-		}
-	}
-
-	sortFindings(findings)
-	return findings
-}
-
-// slotApplicability describes whether a slot-restricted GLSA range applies
-// to an installed version whose SLOT isn't known (Flatcar's SBOM doesn't
-// record it).
-type slotApplicability int
-
-const (
-	slotApplies slotApplicability = iota
-	slotDoesNotApply
-	slotUnknown
-)
-
-// numericSlot matches slots that name a version branch, e.g. "3.11" or "17".
-var numericSlot = regexp.MustCompile(`^\d+(?:\.\d+)*$`)
-
-// rangeApplies decides whether a range with the given slot applies to
-// installedVersion. Unslotted ("" or "*") ranges always apply. Gentoo
-// commonly names multi-version slots after their version branch (python
-// "3.11", llvm "17", postgresql "16"), so when branchSlots is true (some
-// numeric slot of the same GLSA package entry is a component prefix of
-// installedVersion) a numeric slot applies exactly when it is such a
-// prefix. Otherwise the slot naming doesn't follow the version (e.g.
-// webkit-gtk slot "4" for version 2.44), and like slot "0", subslots and
-// named slots such as "esr", it can't be resolved without the real SLOT.
-func rangeApplies(slot, installedVersion string, branchSlots bool) slotApplicability {
-	if slot == "" || slot == "*" {
-		return slotApplies
-	}
-	if !branchSlots || slot == "0" || !numericSlot.MatchString(slot) {
-		return slotUnknown
-	}
-	if isBranchOf(slot, installedVersion) {
-		return slotApplies
-	}
-	return slotDoesNotApply
-}
-
-// isBranchOf reports whether the numeric slot is a component prefix of
-// version, e.g. "3.12" of "3.12.1" but not of "3.121".
-func isBranchOf(slot, version string) bool {
-	if slot == "0" || !numericSlot.MatchString(slot) || !strings.HasPrefix(version, slot) {
-		return false
-	}
-	rest := version[len(slot):]
-	return rest == "" || !unicode.IsDigit(rune(rest[0]))
-}
-
-// evaluate classifies installedVersion against ap's ranges, mirroring
-// glsa-check: a version in any <unaffected> range is fixed; otherwise a
-// version in any <vulnerable> range is affected; otherwise it is fixed if
-// it is newer than some fix (see newerThanAFix) and not affected if not. Ranges are first filtered by slot (see rangeApplies). A
-// matching range whose slot can't be resolved makes the answer uncertain
-// only when it could change it, in which case the result is
-// StatusUnderInvestigation. The returned note explains that status.
-func evaluate(installedVersion string, ap glsa.AffectedPackage) (Status, string) {
-	branchSlots := false
-	for _, r := range append(append([]glsa.VersionRange{}, ap.Vulnerable...), ap.Unaffected...) {
-		if isBranchOf(r.Slot, installedVersion) {
-			branchSlots = true
-			break
-		}
-	}
-
-	// matches reports whether some applicable range matches (sure), and
-	// whether some range with an unresolvable slot matches (maybe).
-	matches := func(ranges []glsa.VersionRange) (sure, maybe bool, err error) {
-		for _, r := range ranges {
-			applies := rangeApplies(r.Slot, installedVersion, branchSlots)
-			if applies == slotDoesNotApply {
-				continue
-			}
-			ok, err := portage.Satisfies(installedVersion, r.Op, r.Version)
-			if err != nil {
-				return false, false, err
-			}
-			if ok && applies == slotApplies {
-				sure = true
-			} else if ok {
-				maybe = true
-			}
-		}
-		return sure, maybe, nil
-	}
-
-	fixed, maybeFixed, err := matches(ap.Unaffected)
-	if err != nil {
-		return StatusUnderInvestigation, err.Error()
-	}
-	if fixed {
-		return StatusFixed, ""
-	}
-	vulnerable, maybeVulnerable, err := matches(ap.Vulnerable)
-	if err != nil {
-		return StatusUnderInvestigation, err.Error()
-	}
-
-	const slotNote = "GLSA range is restricted to a slot that can't be determined from the SBOM"
-	switch {
-	case vulnerable && !maybeFixed:
-		return StatusAffected, ""
-	case vulnerable || maybeVulnerable:
-		return StatusUnderInvestigation, slotNote
-	}
-	newer, maybeNewer := newerThanAFix(installedVersion, ap.Unaffected, branchSlots)
-	switch {
-	case newer:
-		return StatusFixed, ""
-	case maybeFixed || maybeNewer:
-		// Only a fix restricted to an unknown slot covers this version: it
-		// is fixed if that is the installed slot, and not affected if not.
-		return StatusUnderInvestigation, slotNote
-	default:
-		return StatusNotAffected, ""
-	}
-}
-
-// newerThanAFix reports whether installedVersion is at or above the lower
-// bound of some applicable ge/gt/rge/rgt <unaffected> range (sure), or only
-// of such a range whose slot can't be resolved (maybe). glsa-check
-// calls such a version not vulnerable even when no range matches it
-// exactly (e.g. samba 4.22.5 against "rge 4.11.6", which only covers
-// 4.11.6-rN), but it is a release that carries the fix, so VEX should say
-// fixed, not that the vulnerable code was never present.
-func newerThanAFix(installedVersion string, unaffected []glsa.VersionRange, branchSlots bool) (sure, maybe bool) {
-	for _, r := range unaffected {
-		applies := rangeApplies(r.Slot, installedVersion, branchSlots)
-		if applies == slotDoesNotApply {
-			continue
-		}
-		var op string
-		switch r.Op {
-		case "ge", "rge":
-			op = "ge"
-		case "gt", "rgt":
-			op = "gt"
-		default:
-			continue
-		}
-		if ok, err := portage.Satisfies(installedVersion, op, r.Version); err == nil && ok {
-			if applies == slotApplies {
-				return true, false
-			}
-			maybe = true
-		}
-	}
-	return false, maybe
-}
-
-// sortFindings orders findings deterministically so that repeated runs over
-// the same inputs produce byte-identical output.
+// sortFindings orders findings so that the same input always gives the
+// same output.
 func sortFindings(findings []Finding) {
-	sort.Slice(findings, func(i, j int) bool {
-		a, b := findings[i], findings[j]
-		if a.CVE != b.CVE {
-			return a.CVE < b.CVE
-		}
-		if a.Package.CategoryName() != b.Package.CategoryName() {
-			return a.Package.CategoryName() < b.Package.CategoryName()
-		}
-		if a.Package.Version != b.Package.Version {
-			return a.Package.Version < b.Package.Version
-		}
-		if a.Source != b.Source {
-			return a.Source < b.Source
-		}
-		return a.RefID < b.RefID
+	slices.SortStableFunc(findings, func(a, b Finding) int {
+		return cmp.Or(
+			cmp.Compare(a.CVE, b.CVE),
+			cmp.Compare(a.Package.CategoryName(), b.Package.CategoryName()),
+			cmp.Compare(a.Package.Version, b.Package.Version),
+			cmp.Compare(a.Source, b.Source),
+			cmp.Compare(a.RefID, b.RefID),
+		)
 	})
-}
-
-// RunOSV matches every OSV-queryable package in pkgs (golang/cargo purls
-// extracted by sbom.Load into Document.OSVPackages) against OSV.dev via
-// client, returning one Finding per (package, vulnerability) pair OSV.dev
-// reports as affecting that package's exact installed version.
-//
-// Unlike Run's GLSA matching, there is no local version-range comparison
-// here: since each query already targets pkgs' exact installed version,
-// every result OSV.dev returns already applies to it, so every Finding
-// returned here has Status=StatusAffected. OSV.dev has no equivalent of GLSA's
-// <unaffected> ranges to prove a specific version is fixed — it simply
-// doesn't return a vulnerability ID that doesn't apply to the version
-// queried, so there is no "fixed" case to represent for this source.
-func RunOSV(ctx context.Context, pkgs []sbom.Package, client *osv.Client) ([]Finding, error) {
-	if len(pkgs) == 0 {
-		return nil, nil
-	}
-
-	// Build the purl to query for each package as type/name@version, where
-	// sbom.Load has already folded any golang subpath into Name (the
-	// subpath is part of the Go module path, e.g. ".../jwt@v4.5.1#v4" is
-	// module ".../jwt/v4") and normalized Version. Qualifiers are dropped.
-	// The original SBOM purl is still kept in Package.PURL for VEX output.
-	queryPURLs := make([]string, len(pkgs))
-	for i, pkg := range pkgs {
-		queryPURLs[i] = "pkg:" + pkg.Category + "/" + pkg.Name + "@" + pkg.Version
-	}
-
-	results, err := client.Query(ctx, queryPURLs)
-	if err != nil {
-		return nil, err
-	}
-
-	groupIDs := aliasGroupIDs(results)
-	var findings []Finding
-	for i, pkg := range pkgs {
-		// One finding per group ID and package; the RefID is the smallest
-		// record of the group returned for this package.
-		refs := map[string]string{}
-		for _, v := range results[queryPURLs[i]] {
-			for _, id := range groupIDs[v.ID] {
-				if ref, seen := refs[id]; !seen || v.ID < ref {
-					refs[id] = v.ID
-				}
-			}
-		}
-		for id, ref := range refs {
-			findings = append(findings, Finding{CVE: id, Source: SourceOSV, RefID: ref, Package: pkg, Status: StatusAffected})
-		}
-	}
-
-	sortFindings(findings)
-	return findings, nil
-}
-
-// aliasGroupIDs groups every record returned for any package by its
-// aliases (recorded in either direction) and maps each record ID to the
-// identifiers its findings are reported under: all CVEs of the group, or,
-// when no member has a CVE, the smallest record ID of the group. Grouping
-// over the whole result, not per package, keeps the reported IDs stable
-// when one version returns several records of a group and another version
-// only one of them (as seen with grpc's GHSA-hrxh-6v49-42gf /
-// GO-2026-6061), even when only some records list the group's CVE.
-func aliasGroupIDs(results map[string][]osv.Vulnerability) map[string][]string {
-	parent := map[string]string{}
-	var find func(string) string
-	find = func(id string) string {
-		if _, ok := parent[id]; !ok {
-			parent[id] = id
-		}
-		if parent[id] != id {
-			parent[id] = find(parent[id])
-		}
-		return parent[id]
-	}
-	union := func(a, b string) {
-		ra, rb := find(a), find(b)
-		if ra < rb {
-			parent[rb] = ra
-		} else {
-			parent[ra] = rb
-		}
-	}
-	records := map[string]osv.Vulnerability{}
-	for _, vulns := range results {
-		for _, v := range vulns {
-			records[v.ID] = v
-			find(v.ID)
-			for _, a := range v.Aliases {
-				union(v.ID, a)
-			}
-		}
-	}
-
-	cves := map[string][]string{}
-	smallest := map[string]string{}
-	for id, v := range records {
-		root := find(id)
-		for _, a := range append([]string{v.ID}, v.Aliases...) {
-			if strings.HasPrefix(a, "CVE-") {
-				cves[root] = append(cves[root], a)
-			}
-		}
-		if s, ok := smallest[root]; !ok || id < s {
-			smallest[root] = id
-		}
-	}
-	groupIDs := make(map[string][]string, len(records))
-	for id := range records {
-		root := find(id)
-		ids := slices.Compact(slices.Sorted(slices.Values(cves[root])))
-		if len(ids) == 0 {
-			ids = []string{smallest[root]}
-		}
-		groupIDs[id] = ids
-	}
-	return groupIDs
 }

@@ -1,89 +1,140 @@
-// Package glsa reads a local mirror of the Gentoo GLSA (Gentoo Linux Security
-// Advisory) XML corpus, as synced into flatcar/scripts' metadata/glsa/
-// directory (see docs/current-state.md §3).
+// Package glsa reads Gentoo Linux Security Advisories (GLSAs) from a
+// local directory of GLSA XML files. Only the fields needed to match an
+// advisory against installed versions are read; the full format is
+// described in https://www.gentoo.org/glep/glep-0058.html.
 //
-// Only the fields needed to match a GLSA against an installed package
-// version are parsed; see https://www.gentoo.org/glep/glep-0058.html for the
-// full schema.
+// Flatcar is built from Gentoo ebuilds, so Gentoo's advisories apply to
+// its ebuild packages. The directory usually comes from the sync-glsa
+// command (package glsasync), and the advisories go to match.RunGLSA.
 package glsa
 
 import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 )
 
-// GLSA is a single parsed Gentoo Linux Security Advisory.
+// GLSA is one advisory.
 type GLSA struct {
-	// ID is the advisory identifier, e.g. "202604-03".
-	ID string
-	// Title is the advisory's short title.
-	Title string
-	// CVEs are the CVE identifiers referenced by this advisory, extracted
-	// from its <references> section.
-	CVEs []string
-	// Packages lists every <affected><package> entry in the advisory.
+	ID       string // e.g. "202604-03"
+	Title    string
+	CVEs     []string // sorted, from the advisory's references
 	Packages []AffectedPackage
 }
 
-// AffectedPackage is one <package> entry within a GLSA's <affected> section.
+// AffectedPackage is one <package> entry of an advisory: a package and
+// the version ranges in which it is vulnerable or not.
 type AffectedPackage struct {
-	// CategoryName is the Portage "category/name" this entry applies to,
-	// e.g. "sys-fs/fuse".
-	CategoryName string
-	// Arch is the raw arch attribute (e.g. "*", "amd64", "amd64 x86"). "*"
-	// means all architectures.
-	Arch string
-	// Unaffected lists the version ranges that are NOT vulnerable.
-	Unaffected []VersionRange
-	// Vulnerable lists the version ranges that ARE vulnerable.
-	Vulnerable []VersionRange
+	CategoryName string // e.g. "sys-fs/fuse"
+	Arch         string // e.g. "*", "amd64" or "amd64 x86"
+	Unaffected   []VersionRange
+	Vulnerable   []VersionRange
 }
 
-// MatchesArch reports whether this package entry applies to arch (e.g.
-// "amd64"). A GLSA arch of "*" or an empty attribute matches everything.
+// VersionRange is one version condition, such as "ge 1.2.3" (>= 1.2.3).
+type VersionRange struct {
+	// Op is "ge", "gt", "le", "lt" or "eq" (Version may then end in "*"),
+	// or "rge", "rgt", "rle", "rlt", which only compare the -rN revision
+	// of the same version (see portage.Satisfies).
+	Op string
+	// Slot, if set, limits the range to one Portage SLOT.
+	Slot    string
+	Version string
+}
+
+// MatchesArch reports whether this entry applies to arch, e.g. "amd64".
+// An empty arch or "*" means all architectures.
 func (p AffectedPackage) MatchesArch(arch string) bool {
 	if p.Arch == "" || p.Arch == "*" {
 		return true
 	}
-	for _, a := range strings.Fields(p.Arch) {
-		if strings.TrimPrefix(a, "~") == arch {
+	for _, entry := range strings.Fields(p.Arch) {
+		if strings.TrimPrefix(entry, "~") == arch {
 			return true
 		}
 	}
 	return false
 }
 
-// VersionRange is a single <unaffected>/<vulnerable> version constraint.
-type VersionRange struct {
-	// Op is the comparison operator: one of "ge", "gt", "le", "lt", "eq"
-	// (Version may end in "*" for a Portage glob match), or the
-	// revision-only "rge", "rgt", "rle", "rlt", which compare only the -rN
-	// revision of the same base version (see portage.Satisfies).
-	Op string
-	// Slot restricts the range to a specific Portage SLOT, if set.
-	Slot string
-	// Version is the version being compared against.
-	Version string
+// ParseError lists the GLSA files that could not be parsed.
+type ParseError struct {
+	Errs []error // one per file
 }
 
-// --- XML schema (subset) ---
+func (e *ParseError) Error() string {
+	return fmt.Sprintf("%d GLSA file(s) failed to parse: %v", len(e.Errs), errors.Join(e.Errs...))
+}
 
+func (e *ParseError) Unwrap() []error { return e.Errs }
+
+// LoadDir parses every glsa-*.xml file under dir, sorted by ID.
+//
+// A file that fails to parse doesn't stop the others: LoadDir returns
+// every advisory that parsed together with a *ParseError, so the caller
+// decides whether a partial set of advisories is acceptable.
+func LoadDir(dir string) ([]GLSA, error) {
+	paths, err := FindFiles(dir)
+	if err != nil {
+		return nil, fmt.Errorf("walking GLSA directory %q: %w", dir, err)
+	}
+	if len(paths) == 0 {
+		return nil, fmt.Errorf("no glsa-*.xml files found under %q", dir)
+	}
+
+	var glsas []GLSA
+	var parseErrs []error
+	for _, path := range paths {
+		advisory, err := loadFile(path)
+		if err != nil {
+			parseErrs = append(parseErrs, fmt.Errorf("parsing %q: %w", path, err))
+			continue
+		}
+		glsas = append(glsas, advisory)
+	}
+	slices.SortStableFunc(glsas, func(a, b GLSA) int { return strings.Compare(a.ID, b.ID) })
+
+	if len(parseErrs) > 0 {
+		return glsas, &ParseError{Errs: parseErrs}
+	}
+	return glsas, nil
+}
+
+// FindFiles returns the paths of all glsa-*.xml files under dir, skipping
+// ".git" directories.
+func FindFiles(dir string) ([]string, error) {
+	var paths []string
+	err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case entry.IsDir() && entry.Name() == ".git":
+			return filepath.SkipDir
+		case !entry.IsDir() && strings.HasPrefix(entry.Name(), "glsa-") && strings.HasSuffix(entry.Name(), ".xml"):
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	return paths, err
+}
+
+// The parts of the GLSA XML format that we need.
 type xmlGLSA struct {
-	XMLName    xml.Name
-	ID         string       `xml:"id,attr"`
-	Title      string       `xml:"title"`
-	Affected   *xmlAffected `xml:"affected"`
-	References xmlReference `xml:"references"`
-}
-
-type xmlAffected struct {
-	Packages []xmlPackage `xml:"package"`
+	XMLName  xml.Name
+	ID       string `xml:"id,attr"`
+	Title    string `xml:"title"`
+	Affected *struct {
+		Packages []xmlPackage `xml:"package"`
+	} `xml:"affected"`
+	References []struct {
+		Link string `xml:"link,attr"`
+		Text string `xml:",chardata"`
+	} `xml:"references>uri"`
 }
 
 type xmlPackage struct {
@@ -94,156 +145,69 @@ type xmlPackage struct {
 }
 
 type xmlRange struct {
-	Range   string `xml:"range,attr"`
+	Op      string `xml:"range,attr"`
 	Slot    string `xml:"slot,attr"`
 	Version string `xml:",chardata"`
 }
 
-type xmlReference struct {
-	URIs []xmlURI `xml:"uri"`
-}
-
-type xmlURI struct {
-	Link string `xml:"link,attr"`
-	Text string `xml:",chardata"`
-}
-
-// cveRegexp matches CVE identifiers within GLSA reference text/links.
-var cveRegexp = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
-
-// ParseError is returned by LoadDir when some GLSA files could not be
-// parsed. The GLSAs that did parse are still returned alongside it, so a
-// caller may choose to continue with a partial corpus.
-type ParseError struct {
-	// Errs holds one error per file that failed to parse.
-	Errs []error
-}
-
-func (e *ParseError) Error() string {
-	return fmt.Sprintf("%d GLSA file(s) failed to parse: %v", len(e.Errs), errors.Join(e.Errs...))
-}
-
-func (e *ParseError) Unwrap() []error { return e.Errs }
-
-// LoadDir walks dir (non-recursively is not enough for flatcar/scripts'
-// layout, so this recurses) and parses every "glsa-*.xml" file it finds.
-//
-// Files that fail to parse don't stop the walk: every GLSA that parsed is
-// returned together with a *ParseError listing each failure, so a single
-// malformed advisory can never silently drop out of the corpus. Callers
-// that want to proceed anyway can check for *ParseError with errors.As.
-func LoadDir(dir string) ([]GLSA, error) {
-	var (
-		glsas     []GLSA
-		parseErrs []error
-		sawFiles  bool
-	)
-
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			// A sync-glsa-produced mirror contains a ".git" directory full of
-			// non-GLSA internals; skip it entirely rather than walking it.
-			if d.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasPrefix(d.Name(), "glsa-") || !strings.HasSuffix(d.Name(), ".xml") {
-			return nil
-		}
-		sawFiles = true
-
-		g, parseErr := loadFile(path)
-		if parseErr != nil {
-			parseErrs = append(parseErrs, fmt.Errorf("parsing %q: %w", path, parseErr))
-			return nil
-		}
-		glsas = append(glsas, g)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("walking GLSA directory %q: %w", dir, err)
-	}
-	if !sawFiles {
-		return nil, fmt.Errorf("no glsa-*.xml files found under %q", dir)
-	}
-
-	sort.Slice(glsas, func(i, j int) bool { return glsas[i].ID < glsas[j].ID })
-
-	if len(parseErrs) > 0 {
-		return glsas, &ParseError{Errs: parseErrs}
-	}
-	return glsas, nil
-}
+var cvePattern = regexp.MustCompile(`CVE-\d{4}-\d{4,}`)
 
 func loadFile(path string) (GLSA, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // path comes from filepath.WalkDir over a user-provided directory.
+	raw, err := os.ReadFile(path) //nolint:gosec // path is under the user-provided directory.
 	if err != nil {
 		return GLSA{}, err
 	}
-
-	var x xmlGLSA
-	if err := xml.Unmarshal(raw, &x); err != nil {
+	var parsed xmlGLSA
+	if err := xml.Unmarshal(raw, &parsed); err != nil {
 		return GLSA{}, err
 	}
-	if x.XMLName.Local != "glsa" || x.ID == "" {
-		return GLSA{}, fmt.Errorf("not a GLSA document (root element <%s>, id %q)", x.XMLName.Local, x.ID)
-	}
-	// An empty <affected> is legitimate (non-vulnerability notices such as
-	// GLSA 200409-14, or infrastructure incidents), but a missing one, or a
-	// package with no name or ranges, means the advisory is incomplete and
-	// would otherwise silently match nothing.
-	if x.Affected == nil {
-		return GLSA{}, fmt.Errorf("GLSA %s has no <affected> element", x.ID)
-	}
-	for i, p := range x.Affected.Packages {
-		if strings.TrimSpace(p.Name) == "" {
-			return GLSA{}, fmt.Errorf("GLSA %s: affected package #%d has no name", x.ID, i+1)
-		}
-		if len(p.Vulnerable) == 0 && len(p.Unaffected) == 0 {
-			return GLSA{}, fmt.Errorf("GLSA %s: affected package %q has no version ranges", x.ID, p.Name)
-		}
+	if err := checkComplete(parsed); err != nil {
+		return GLSA{}, err
 	}
 
-	g := GLSA{
-		ID:    x.ID,
-		Title: strings.TrimSpace(x.Title),
-	}
-
-	for _, p := range x.Affected.Packages {
-		g.Packages = append(g.Packages, AffectedPackage{
-			CategoryName: p.Name,
-			Arch:         p.Arch,
-			Unaffected:   convertRanges(p.Unaffected),
-			Vulnerable:   convertRanges(p.Vulnerable),
+	advisory := GLSA{ID: parsed.ID, Title: strings.TrimSpace(parsed.Title)}
+	for _, pkg := range parsed.Affected.Packages {
+		advisory.Packages = append(advisory.Packages, AffectedPackage{
+			CategoryName: pkg.Name,
+			Arch:         pkg.Arch,
+			Unaffected:   convertRanges(pkg.Unaffected),
+			Vulnerable:   convertRanges(pkg.Vulnerable),
 		})
 	}
+	for _, reference := range parsed.References {
+		advisory.CVEs = append(advisory.CVEs, cvePattern.FindAllString(reference.Link+" "+reference.Text, -1)...)
+	}
+	slices.Sort(advisory.CVEs)
+	advisory.CVEs = slices.Compact(advisory.CVEs)
+	return advisory, nil
+}
 
-	cveSet := map[string]bool{}
-	for _, uri := range x.References.URIs {
-		for _, m := range cveRegexp.FindAllString(uri.Link+" "+uri.Text, -1) {
-			cveSet[m] = true
+// checkComplete rejects an advisory that would otherwise silently match
+// nothing: one without <affected>, or with a package that has no name or
+// no ranges. An empty <affected> is fine: some GLSAs are notices that
+// affect no package.
+func checkComplete(parsed xmlGLSA) error {
+	if parsed.XMLName.Local != "glsa" || parsed.ID == "" {
+		return fmt.Errorf("not a GLSA document (root element <%s>, id %q)", parsed.XMLName.Local, parsed.ID)
+	}
+	if parsed.Affected == nil {
+		return fmt.Errorf("GLSA %s has no <affected> element", parsed.ID)
+	}
+	for i, pkg := range parsed.Affected.Packages {
+		if strings.TrimSpace(pkg.Name) == "" {
+			return fmt.Errorf("GLSA %s: affected package #%d has no name", parsed.ID, i+1)
+		}
+		if len(pkg.Vulnerable) == 0 && len(pkg.Unaffected) == 0 {
+			return fmt.Errorf("GLSA %s: affected package %q has no version ranges", parsed.ID, pkg.Name)
 		}
 	}
-	for cve := range cveSet {
-		g.CVEs = append(g.CVEs, cve)
-	}
-	sort.Strings(g.CVEs)
-
-	return g, nil
+	return nil
 }
 
 func convertRanges(ranges []xmlRange) []VersionRange {
-	out := make([]VersionRange, 0, len(ranges))
-	for _, r := range ranges {
-		out = append(out, VersionRange{
-			Op:      r.Range,
-			Slot:    r.Slot,
-			Version: strings.TrimSpace(r.Version),
-		})
+	converted := make([]VersionRange, len(ranges))
+	for i, r := range ranges {
+		converted[i] = VersionRange{Op: r.Op, Slot: r.Slot, Version: strings.TrimSpace(r.Version)}
 	}
-	return out
+	return converted
 }
