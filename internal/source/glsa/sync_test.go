@@ -145,6 +145,66 @@ func TestSyncKeepsUntrackedFiles(t *testing.T) {
 	}
 }
 
+// TestSyncUpdatesGitCLIClone checks that mirrors made by "git clone", as
+// earlier versions of sync-glsa did, can be updated. git clone writes
+// refs/remotes/origin/HEAD as a symbolic ref.
+func TestSyncUpdatesGitCLIClone(t *testing.T) {
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	cmd := exec.Command("git", "clone", "--quiet", "--no-local", upstream, dest) // #nosec G204 -- test arguments
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v: %s", err, out)
+	}
+
+	for _, name := range []string{"glsa-202601-02.xml", "glsa-202601-03.xml"} {
+		addUpstreamFile(t, upstream, name)
+		res, err := Sync(context.Background(), dest, upstream, nil)
+		if err != nil {
+			t.Fatalf("Sync after adding %s: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, name)); err != nil {
+			t.Errorf("%s missing after update (result %+v)", name, res)
+		}
+	}
+}
+
+// TestSyncReplacesDirectoryWithFile checks the rare case where upstream
+// turns a directory into a file while the mirror has an untracked file in
+// that directory: like "git reset --hard", the file wins.
+func TestSyncReplacesDirectoryWithFile(t *testing.T) {
+	upstream := newTestUpstream(t)
+	if err := os.MkdirAll(filepath.Join(upstream, "d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addUpstreamFile(t, upstream, filepath.Join("d", "x"))
+	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "d", "u"), []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"d", "glsa-202601-02.xml"} {
+		if err := os.RemoveAll(filepath.Join(upstream, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commitAll(t, upstream, "remove d/ and glsa-202601-02.xml")
+	addUpstreamFile(t, upstream, "d")
+
+	res, err := Sync(context.Background(), dest, upstream, nil)
+	if err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(dest, "d")); err != nil || info.IsDir() {
+		t.Errorf("d should be a file after the update (err = %v)", err)
+	}
+	if res.FileCount != 1 {
+		t.Errorf("FileCount = %d, want 1 (the GLSA removed upstream must be gone)", res.FileCount)
+	}
+}
+
 // TestSyncSwitchesRemoteOnRepoChange verifies that calling Sync again with a
 // different repoURL against an already-cloned dest re-points the "origin"
 // remote and syncs from the new repo, instead of silently continuing to

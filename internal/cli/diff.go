@@ -125,12 +125,13 @@ func addOSVFindings(ctx context.Context, opts diffOptions, in *diff.Input) error
 	if err := applyCurlAdvisories(ctx, client, in); err != nil {
 		return fmt.Errorf("fetching curl advisories from OSV.dev: %w", err)
 	}
-	osvFindings, err := opts.matchOSV(ctx, in.Old.Doc, in.New.Doc)
+	findingsPerSBOM, err := opts.matchOSV(ctx, in.Old.Doc, in.New.Doc)
 	if err != nil {
 		return fmt.Errorf("matching against OSV.dev: %w", err)
 	}
-	in.Old.Findings = append(in.Old.Findings, osvFindings[0]...)
-	in.New.Findings = append(in.New.Findings, osvFindings[1]...)
+	oldFindings, newFindings := findingsPerSBOM[0], findingsPerSBOM[1]
+	in.Old.Findings = append(in.Old.Findings, oldFindings...)
+	in.New.Findings = append(in.New.Findings, newFindings...)
 	return nil
 }
 

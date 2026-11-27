@@ -80,11 +80,11 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 	// be built from one combined list.
 	findings := glsa.Match(doc.Ebuilds, glsas, opts.arch)
 	if opts.osvEnabled {
-		osvFindings, err := opts.matchOSV(cmd.Context(), doc)
+		findingsPerSBOM, err := opts.matchOSV(cmd.Context(), doc)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
-		findings = append(findings, osvFindings[0]...)
+		findings = append(findings, findingsPerSBOM[0]...)
 	} else if len(doc.Modules) > 0 {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
 			"packages", len(doc.Modules))

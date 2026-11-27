@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,8 +27,10 @@ const DefaultRepoURL = "https://anongit.gentoo.org/git/data/glsa.git"
 // no deadline, so a network problem fails instead of hanging.
 const DefaultTimeout = 5 * time.Minute
 
-// fetchedHead is where an update stores the upstream HEAD it fetched.
-const fetchedHead = plumbing.ReferenceName("refs/remotes/origin/HEAD")
+// fetchedHead is where an update stores the upstream HEAD it fetched. git
+// itself never writes this name; "git clone" makes refs/remotes/origin/HEAD
+// a symbolic ref, which go-git refuses to overwrite.
+const fetchedHead = plumbing.ReferenceName("refs/flatcar-vex/upstream")
 
 // SyncResult describes what Sync did.
 type SyncResult struct {
@@ -212,30 +215,57 @@ func pointBranchAt(repo *git.Repository, commit plumbing.Hash) error {
 // go-git's hard reset alone would also delete untracked files, so it is
 // limited to the paths tracked before or after the reset.
 func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
-	tracked, err := trackedPaths(repo, commit)
-	if err != nil {
-		return err
-	}
-	if len(tracked) == 0 {
-		return nil // go-git reads an empty list as "every file"
-	}
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return err
 	}
+	trackedBefore, err := indexPaths(repo)
+	if err != nil {
+		return err
+	}
+	trackedAfter, err := treePaths(repo, commit)
+	if err != nil {
+		return err
+	}
+	if err := removeDirectoriesInTheWay(worktree.Filesystem.Root(), trackedAfter); err != nil {
+		return err
+	}
+	tracked := slices.Concat(trackedBefore, trackedAfter)
+	if len(tracked) == 0 {
+		return nil // go-git reads an empty list as "every file"
+	}
 	return worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked})
 }
 
-// trackedPaths lists the files in repo's index and in commit's tree.
-func trackedPaths(repo *git.Repository, commit plumbing.Hash) ([]string, error) {
-	var paths []string
+// removeDirectoriesInTheWay deletes directories where a file must go, as
+// git does when upstream turns a directory into a file; go-git would fail.
+func removeDirectoriesInTheWay(root string, files []string) error {
+	for _, file := range files {
+		path := filepath.Join(root, filepath.FromSlash(file))
+		if info, err := os.Lstat(path); err == nil && info.IsDir() {
+			if err := os.RemoveAll(path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// indexPaths lists the files repo's index tracks.
+func indexPaths(repo *git.Repository) ([]string, error) {
 	idx, err := repo.Storer.Index()
 	if err != nil {
 		return nil, err
 	}
+	paths := make([]string, 0, len(idx.Entries))
 	for _, entry := range idx.Entries {
 		paths = append(paths, entry.Name)
 	}
+	return paths, nil
+}
+
+// treePaths lists the files in commit.
+func treePaths(repo *git.Repository, commit plumbing.Hash) ([]string, error) {
 	commitObject, err := repo.CommitObject(commit)
 	if err != nil {
 		return nil, err
@@ -244,6 +274,7 @@ func trackedPaths(repo *git.Repository, commit plumbing.Hash) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
+	var paths []string
 	err = files.ForEach(func(file *object.File) error {
 		paths = append(paths, file.Name)
 		return nil
