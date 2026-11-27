@@ -206,8 +206,8 @@ ID when none has a CVE.
 Unlike GLSA, this requires live network access and there is no local corpus to sync
 first, since OSV.dev's API is queried directly with each package's exact version (see
 [`docs/multi-source-proposal.md`](./docs/multi-source-proposal.md) for the full design
-rationale). Paginated results are followed, and rate-limit or server errors are retried
-with backoff. Pass `--osv=false` to work offline; a warning is logged and the document's
+rationale). Paginated results are followed, and network, rate-limit and server errors are
+retried with backoff. Pass `--osv=false` to work offline; a warning is logged and the document's
 `tooling` field records that golang/cargo packages were not checked.
 
 Useful flags:
