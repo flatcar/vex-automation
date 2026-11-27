@@ -10,7 +10,7 @@ package versions to the batch endpoint, which returns the IDs of the vulnerabili
 affecting each exact version, and follows pagination (the library does not); `Get` fetches
 full records, because only those list the CVE aliases, and leaves out IDs OSV.dev answers
 404 for. Records are fetched ten at a time. The library's waits between retries ignore the
-context, so `--osv-timeout` can be overrun by up to about 14 seconds.
+context, so `--osv-timeout` can be overrun by one wait, up to about 15 seconds.
 
 `Match` turns the answers into findings. Two consequences of how OSV.dev works shape it.
 Every finding is `affected`, because OSV.dev only answers for vulnerable versions; a fixed
