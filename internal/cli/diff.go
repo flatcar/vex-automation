@@ -12,6 +12,7 @@ import (
 	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 type diffOptions struct {
@@ -138,7 +139,7 @@ func addOSVFindings(ctx context.Context, opts diffOptions, in *diff.Input) error
 // matchOSVBothSides queries OSV.dev once for the packages of both sides,
 // so both are matched against the same OSV.dev data, then splits the
 // findings back per side.
-func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs []sbom.Package) (oldFindings, newFindings []match.Finding, err error) {
+func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs []sbom.Package) (oldFindings, newFindings []vuln.Finding, err error) {
 	inOld, inNew := toSet(oldPkgs), toSet(newPkgs)
 	var bothSides []sbom.Package
 	seen := map[sbom.Package]bool{}

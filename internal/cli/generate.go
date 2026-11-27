@@ -14,6 +14,7 @@ import (
 	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/vexgen"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 type generateOptions struct {
@@ -105,7 +106,7 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 }
 
 // matchOSV matches pkgs against OSV.dev, giving up after timeout.
-func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]match.Finding, error) {
+func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]vuln.Finding, error) {
 	ctx, cancel := withTimeout(cmd.Context(), timeout)
 	defer cancel()
 	return match.RunOSV(ctx, pkgs, &osv.Client{BaseURL: baseURL})

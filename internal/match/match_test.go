@@ -12,6 +12,7 @@ import (
 	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 func fuseGLSA() glsa.GLSA {
@@ -40,11 +41,11 @@ func TestRunAffected(t *testing.T) {
 		t.Fatalf("got %d findings, want 2 (one per CVE): %+v", len(findings), findings)
 	}
 	for _, f := range findings {
-		if f.Status != StatusAffected {
-			t.Errorf("finding %+v: want Status=affected for version below the unaffected range", f)
+		if f.Status != vuln.StatusAffected {
+			t.Errorf("finding %+v: want vuln.Status=affected for version below the unaffected range", f)
 		}
-		if f.Source != SourceGLSA {
-			t.Errorf("Source = %q, want %q", f.Source, SourceGLSA)
+		if f.Source != vuln.SourceGLSA {
+			t.Errorf("Source = %q, want %q", f.Source, vuln.SourceGLSA)
 		}
 		if f.RefID != "202604-03" {
 			t.Errorf("RefID = %q, want 202604-03", f.RefID)
@@ -67,8 +68,8 @@ func TestRunFixed(t *testing.T) {
 		t.Fatalf("got %d findings, want 2", len(findings))
 	}
 	for _, f := range findings {
-		if f.Status != StatusFixed {
-			t.Errorf("finding %+v: want Status=fixed for version at the unaffected boundary", f)
+		if f.Status != vuln.StatusFixed {
+			t.Errorf("finding %+v: want vuln.Status=fixed for version at the unaffected boundary", f)
 		}
 	}
 }
@@ -109,8 +110,8 @@ func TestRunUnparseableVersionIsUnderInvestigation(t *testing.T) {
 		t.Fatalf("got %d findings, want 2: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
-		if f.Status != StatusUnderInvestigation || f.Note == "" {
-			t.Errorf("finding %+v: want Status=under_investigation with a note", f)
+		if f.Status != vuln.StatusUnderInvestigation || f.Note == "" {
+			t.Errorf("finding %+v: want vuln.Status=under_investigation with a note", f)
 		}
 	}
 }
@@ -126,8 +127,8 @@ func TestRunGLSAWithNoCVEsUsesGLSAID(t *testing.T) {
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1 for a GLSA with no CVE references: %+v", len(findings), findings)
 	}
-	if findings[0].CVE != "GLSA-202604-03" || findings[0].Status != StatusAffected {
-		t.Errorf("finding = %+v, want CVE=GLSA-202604-03 Status=affected", findings[0])
+	if findings[0].CVE != "GLSA-202604-03" || findings[0].Status != vuln.StatusAffected {
+		t.Errorf("finding = %+v, want CVE=GLSA-202604-03 vuln.Status=affected", findings[0])
 	}
 }
 
@@ -137,7 +138,7 @@ func TestEvaluate(t *testing.T) {
 		version    string
 		vulnerable []glsa.VersionRange
 		unaffected []glsa.VersionRange
-		want       Status
+		want       vuln.Status
 	}{
 		{
 			// Regression: the vulnerable range also covers fixed revisions
@@ -147,21 +148,21 @@ func TestEvaluate(t *testing.T) {
 			version:    "1.5",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.0"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.0"}, {Op: "rge", Version: "1.0-r1"}},
-			want:       StatusAffected,
+			want:       vuln.StatusAffected,
 		},
 		{
 			name:       "revision op matches a fixed revision",
 			version:    "1.0-r2",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.0"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.0"}, {Op: "rge", Version: "1.0-r1"}},
-			want:       StatusFixed,
+			want:       vuln.StatusFixed,
 		},
 		{
 			name:       "outside every range is not affected",
 			version:    "1.3",
 			vulnerable: []glsa.VersionRange{{Op: "eq", Version: "1.2*"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "1.4"}},
-			want:       StatusNotAffected,
+			want:       vuln.StatusNotAffected,
 		},
 		{
 			// Regression: a numeric slot is matched against the installed
@@ -177,7 +178,7 @@ func TestEvaluate(t *testing.T) {
 				{Op: "ge", Version: "3.11.9", Slot: "3.11"},
 				{Op: "ge", Version: "3.12.4", Slot: "3.12"},
 			},
-			want: StatusAffected,
+			want: vuln.StatusAffected,
 		},
 		{
 			name:       "numeric slot prefix must end at a component boundary",
@@ -185,7 +186,7 @@ func TestEvaluate(t *testing.T) {
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "17.0.2", Slot: "17"}},
 			// Would make 17.0.1 fixed if slot "1" were taken as its branch.
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "17.0.0", Slot: "1"}},
-			want:       StatusAffected,
+			want:       vuln.StatusAffected,
 		},
 		{
 			// Regression: webkit-gtk uses slots "4"/"6" for 2.x versions,
@@ -195,7 +196,7 @@ func TestEvaluate(t *testing.T) {
 			version:    "2.44.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2", Slot: "4"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.44.2", Slot: "4"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 		{
 			// Regression: a fix in an unknown slot doesn't show the
@@ -204,49 +205,49 @@ func TestEvaluate(t *testing.T) {
 			version:    "2.45.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2", Slot: "4"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.44.2", Slot: "4"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 		{
 			name:       "newer than a revision-restricted fix in an unknown slot",
 			version:    "2.45.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2", Slot: "4"}},
 			unaffected: []glsa.VersionRange{{Op: "rge", Version: "2.44.2", Slot: "4"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 		{
 			name:       "fix in an applicable range outweighs one in an unknown slot",
 			version:    "2.45.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "2.44.2"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "2.44.2", Slot: "4"}, {Op: "rge", Version: "2.44.2"}},
-			want:       StatusFixed,
+			want:       vuln.StatusFixed,
 		},
 		{
 			name:    "other branch's slot is ruled out when the installed branch is listed",
 			version: "3.12.5",
 			// The 3.11 range would match 3.12.5 if its slot were ignored.
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "3.13", Slot: "3.11"}, {Op: "lt", Version: "3.12.4", Slot: "3.12"}},
-			want:       StatusNotAffected,
+			want:       vuln.StatusNotAffected,
 		},
 		{
 			name:       "named slot that could change the answer",
 			version:    "115.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "115.9", Slot: "esr"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "115.9", Slot: "esr"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 		{
 			name:       "named slot that could change the answer next to an unslotted range",
 			version:    "120.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "125.0", Slot: "esr"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "130.0"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 		{
 			name:       "named slot range that doesn't match is irrelevant",
 			version:    "120.0",
 			vulnerable: []glsa.VersionRange{{Op: "lt", Version: "110.0"}, {Op: "lt", Version: "115.9", Slot: "esr"}},
 			unaffected: []glsa.VersionRange{{Op: "ge", Version: "130.0"}},
-			want:       StatusNotAffected,
+			want:       vuln.StatusNotAffected,
 		},
 		{
 			// Regression: a newer branch than every rge fix matches no
@@ -259,26 +260,26 @@ func TestEvaluate(t *testing.T) {
 				{Op: "rge", Version: "4.9.18"},
 				{Op: "rge", Version: "4.11.6"},
 			},
-			want: StatusFixed,
+			want: vuln.StatusFixed,
 		},
 		{
 			name:       "older than every vulnerable range",
 			version:    "1.0",
 			vulnerable: []glsa.VersionRange{{Op: "rlt", Version: "2.0-r3"}},
 			unaffected: []glsa.VersionRange{{Op: "rge", Version: "2.0-r3"}},
-			want:       StatusNotAffected,
+			want:       vuln.StatusNotAffected,
 		},
 		{
 			name:       "glob range",
 			version:    "2.4.7-r1",
 			vulnerable: []glsa.VersionRange{{Op: "eq", Version: "2.4*"}},
-			want:       StatusAffected,
+			want:       vuln.StatusAffected,
 		},
 		{
 			name:       "unknown operator",
 			version:    "1.0",
 			vulnerable: []glsa.VersionRange{{Op: "bogus", Version: "2.0"}},
-			want:       StatusUnderInvestigation,
+			want:       vuln.StatusUnderInvestigation,
 		},
 	}
 	for _, tt := range tests {
@@ -287,7 +288,7 @@ func TestEvaluate(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("evaluate(%q) = %q (%s), want %q", tt.version, got, note, tt.want)
 			}
-			if got == StatusUnderInvestigation && note == "" {
+			if got == vuln.StatusUnderInvestigation && note == "" {
 				t.Error("under_investigation result has no note")
 			}
 		})
@@ -374,13 +375,13 @@ func TestRunOSVBuildsFindingsFromResults(t *testing.T) {
 	if f.CVE != "CVE-2026-9999" {
 		t.Errorf("CVE = %q, want CVE-2026-9999", f.CVE)
 	}
-	if f.Source != SourceOSV {
-		t.Errorf("Source = %q, want %q", f.Source, SourceOSV)
+	if f.Source != vuln.SourceOSV {
+		t.Errorf("Source = %q, want %q", f.Source, vuln.SourceOSV)
 	}
 	if f.RefID != "GHSA-aaaa" {
 		t.Errorf("RefID = %q, want GHSA-aaaa", f.RefID)
 	}
-	if f.Status != StatusAffected {
+	if f.Status != vuln.StatusAffected {
 		t.Errorf("Status = %q, want affected for an OSV.dev finding", f.Status)
 	}
 	if f.Package.PURL != "pkg:golang/example.com/mod@v1.0.0" {
@@ -547,18 +548,18 @@ func TestSortFindingsOrdersBySourceThenRefIDForIdenticalCVEAndPackage(t *testing
 	// could arise once both GLSA and OSV.dev are matched together), but two
 	// different sources: order must still be fully deterministic.
 	pkg := sbom.Package{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"}
-	findings := []Finding{
-		{CVE: "CVE-2026-1", Source: SourceOSV, RefID: "GHSA-b", Package: pkg},
-		{CVE: "CVE-2026-1", Source: SourceGLSA, RefID: "202604-02", Package: pkg},
-		{CVE: "CVE-2026-1", Source: SourceGLSA, RefID: "202604-01", Package: pkg},
+	findings := []vuln.Finding{
+		{CVE: "CVE-2026-1", Source: vuln.SourceOSV, RefID: "GHSA-b", Package: pkg},
+		{CVE: "CVE-2026-1", Source: vuln.SourceGLSA, RefID: "202604-02", Package: pkg},
+		{CVE: "CVE-2026-1", Source: vuln.SourceGLSA, RefID: "202604-01", Package: pkg},
 	}
 
-	sortFindings(findings)
+	vuln.Sort(findings)
 
 	want := []struct{ source, refID string }{
-		{SourceGLSA, "202604-01"},
-		{SourceGLSA, "202604-02"},
-		{SourceOSV, "GHSA-b"},
+		{vuln.SourceGLSA, "202604-01"},
+		{vuln.SourceGLSA, "202604-02"},
+		{vuln.SourceOSV, "GHSA-b"},
 	}
 	for i, w := range want {
 		if findings[i].Source != w.source || findings[i].RefID != w.refID {
@@ -571,15 +572,15 @@ func TestApplyCurlAdvisories(t *testing.T) {
 	curl := func(version string) sbom.Package {
 		return sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "curl", Version: version}
 	}
-	glsaFinding := func(cve string, pkg sbom.Package) Finding {
-		return Finding{CVE: cve, Source: SourceGLSA, RefID: "202611-07", Package: pkg, Status: StatusAffected}
+	glsaFinding := func(cve string, pkg sbom.Package) vuln.Finding {
+		return vuln.Finding{CVE: cve, Source: vuln.SourceGLSA, RefID: "202611-07", Package: pkg, Status: vuln.StatusAffected}
 	}
-	findings := []Finding{
+	findings := []vuln.Finding{
 		glsaFinding("CVE-2024-11053", curl("8.21.0-r1")), // fixed upstream in 8.11.1
 		glsaFinding("CVE-2026-13608", curl("8.21.0-r1")), // 8.21.0 is listed upstream
 		glsaFinding("CVE-2026-0001", curl("8.21.0-r1")),  // no upstream record
 		glsaFinding("CVE-2024-11053", sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "wget", Version: "1.0"}),
-		{CVE: "CVE-2024-11053", Source: SourceOSV, RefID: "X", Package: curl("8.21.0"), Status: StatusAffected},
+		{CVE: "CVE-2024-11053", Source: vuln.SourceOSV, RefID: "X", Package: curl("8.21.0"), Status: vuln.StatusAffected},
 	}
 
 	if got, want := strings.Join(CurlAdvisoryIDs(findings), ","), "CURL-CVE-2024-11053,CURL-CVE-2026-0001,CURL-CVE-2026-13608"; got != want {
@@ -592,7 +593,7 @@ func TestApplyCurlAdvisories(t *testing.T) {
 	}
 	got := ApplyCurlAdvisories(findings, advisories)
 
-	want := []Status{StatusNotAffected, StatusAffected, StatusAffected, StatusAffected, StatusAffected}
+	want := []vuln.Status{vuln.StatusNotAffected, vuln.StatusAffected, vuln.StatusAffected, vuln.StatusAffected, vuln.StatusAffected}
 	for i, f := range got {
 		if f.Status != want[i] {
 			t.Errorf("finding %d (%s %s): status %s, want %s", i, f.CVE, f.Package.FullName(), f.Status, want[i])
@@ -601,7 +602,7 @@ func TestApplyCurlAdvisories(t *testing.T) {
 	if !strings.Contains(got[0].Note, "CURL-CVE-2024-11053") {
 		t.Errorf("note %q does not name the curl advisory", got[0].Note)
 	}
-	if findings[0].Status != StatusAffected {
+	if findings[0].Status != vuln.StatusAffected {
 		t.Error("input findings were modified")
 	}
 }
@@ -611,10 +612,10 @@ func TestApplyCurlAdvisoriesKeepsUnmappableVersions(t *testing.T) {
 		"CURL-CVE-2026-13608": {ID: "CURL-CVE-2026-13608", AffectedVersions: []string{"8.21.0"}},
 	}
 	for _, version := range []string{"8.21.0_p1-r1", "8.21.0_rc1", "8.21.0_pre20260101", "9999"} {
-		f := Finding{CVE: "CVE-2026-13608", Source: SourceGLSA, RefID: "202611-07", Status: StatusAffected,
+		f := vuln.Finding{CVE: "CVE-2026-13608", Source: vuln.SourceGLSA, RefID: "202611-07", Status: vuln.StatusAffected,
 			Package: sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "curl", Version: version}}
-		if got := ApplyCurlAdvisories([]Finding{f}, advisories)[0].Status; got != StatusAffected {
-			t.Errorf("version %s: status %s, want %s", version, got, StatusAffected)
+		if got := ApplyCurlAdvisories([]vuln.Finding{f}, advisories)[0].Status; got != vuln.StatusAffected {
+			t.Errorf("version %s: status %s, want %s", version, got, vuln.StatusAffected)
 		}
 	}
 }

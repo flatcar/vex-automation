@@ -1,6 +1,8 @@
 package match
 
 import (
+	"github.com/flatcar/vex-automation/internal/vuln"
+
 	"fmt"
 	"regexp"
 	"slices"
@@ -28,15 +30,15 @@ var versionSchemes = map[string]versionTranslator{
 
 // evaluatePackage is evaluate with the package's version scheme exception,
 // if any, applied first. A range that can't be translated makes the result
-// StatusUnderInvestigation, never a guessed status.
-func evaluatePackage(categoryName, installedVersion string, affected glsa.AffectedPackage) (Status, string) {
+// vuln.StatusUnderInvestigation, never a guessed status.
+func evaluatePackage(categoryName, installedVersion string, affected glsa.AffectedPackage) (vuln.Status, string) {
 	translate, ok := versionSchemes[categoryName]
 	if !ok {
 		return evaluate(installedVersion, affected)
 	}
 	translatedVersion, translatedAffected, err := translate(installedVersion, affected)
 	if err != nil {
-		return StatusUnderInvestigation, fmt.Sprintf("%s: %v", categoryName, err)
+		return vuln.StatusUnderInvestigation, fmt.Sprintf("%s: %v", categoryName, err)
 	}
 	return evaluate(translatedVersion, translatedAffected)
 }

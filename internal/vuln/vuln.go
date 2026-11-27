@@ -1,13 +1,11 @@
-// Package match decides, for each installed package, which known
-// vulnerabilities affect it: ebuild packages against Gentoo's GLSAs
-// (RunGLSA), golang/cargo modules against OSV.dev (RunOSV).
+// Package vuln is the shared vocabulary of the pipeline: a Finding says
+// how one vulnerability affects one installed package, with a VEX Status.
 //
-// It sits in the middle of the pipeline: its input is the packages from
-// package sbom and the advisories from packages glsa and osv; its output,
-// a list of Findings, is all that package vexgen (generate) and package
-// diff (diff) look at. Both matchers produce the same Finding type so that
-// the steps after them don't need to know where a finding came from.
-package match
+// Every vulnerability source (packages glsa and osv) produces Findings, and
+// every output (packages vexgen and diff) consumes them. Keeping the type
+// here means outputs never depend on how a source works, and a new source
+// only has to produce Findings.
+package vuln
 
 import (
 	"cmp"
@@ -73,9 +71,9 @@ type Finding struct {
 	Note string
 }
 
-// sortFindings orders findings so that the same input always gives the
-// same output.
-func sortFindings(findings []Finding) {
+// Sort orders findings so that the same input always gives the same
+// output.
+func Sort(findings []Finding) {
 	slices.SortStableFunc(findings, func(a, b Finding) int {
 		return cmp.Or(
 			cmp.Compare(a.CVE, b.CVE),

@@ -15,8 +15,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 // SchemaVersion is the version of the JSON document produced from Result.
@@ -34,14 +34,14 @@ const (
 	// OSV.dev returns nothing for an unaffected version.
 	StateClean State = "clean"
 	// StateAffected means the most severe status among that side's findings for
-	// the key is affected (match.StatusAffected).
-	StateAffected State = State(match.StatusAffected)
-	// StateUnderInvestigation mirrors match.StatusUnderInvestigation.
-	StateUnderInvestigation State = State(match.StatusUnderInvestigation)
-	// StateFixed mirrors match.StatusFixed.
-	StateFixed State = State(match.StatusFixed)
-	// StateNotAffected mirrors match.StatusNotAffected.
-	StateNotAffected State = State(match.StatusNotAffected)
+	// the key is affected (vuln.StatusAffected).
+	StateAffected State = State(vuln.StatusAffected)
+	// StateUnderInvestigation mirrors vuln.StatusUnderInvestigation.
+	StateUnderInvestigation State = State(vuln.StatusUnderInvestigation)
+	// StateFixed mirrors vuln.StatusFixed.
+	StateFixed State = State(vuln.StatusFixed)
+	// StateNotAffected mirrors vuln.StatusNotAffected.
+	StateNotAffected State = State(vuln.StatusNotAffected)
 	// StateUnchecked means no finding shows the package affected, but that
 	// side also ships a copy whose version could not be checked (see
 	// sbom.SkippedPackage.Module), so it may still be affected.
@@ -73,7 +73,7 @@ var bucketOrder = []Bucket{BucketFixed, BucketRemoved, BucketIntroduced, BucketS
 // Side is one release: its SBOM and the findings matched against it.
 type Side struct {
 	Doc      sbom.Document
-	Findings []match.Finding
+	Findings []vuln.Finding
 }
 
 // Input is the data Compute compares. Both sides must have been matched
@@ -181,7 +181,7 @@ type presence struct {
 // comparedSide is one release, prepared for comparison.
 type comparedSide struct {
 	packages map[packageID]*presence
-	findings map[key][]match.Finding
+	findings map[key][]vuln.Finding
 }
 
 func prepare(s Side) comparedSide {
@@ -314,10 +314,10 @@ func (s comparedSide) stateOf(k key) State {
 		}
 		return StateClean
 	}
-	worst := slices.MinFunc(findings, func(a, b match.Finding) int {
-		return match.Severity(a.Status) - match.Severity(b.Status)
+	worst := slices.MinFunc(findings, func(a, b vuln.Finding) int {
+		return vuln.Severity(a.Status) - vuln.Severity(b.Status)
 	}).Status
-	if worst != match.StatusAffected && pkg.unchecked {
+	if worst != vuln.StatusAffected && pkg.unchecked {
 		return StateUnchecked
 	}
 	return State(worst)
@@ -348,8 +348,8 @@ func addPresence(packages map[packageID]*presence, pkg sbom.Package) *presence {
 	return entry
 }
 
-func groupFindings(findings []match.Finding) map[key][]match.Finding {
-	grouped := map[key][]match.Finding{}
+func groupFindings(findings []vuln.Finding) map[key][]vuln.Finding {
+	grouped := map[key][]vuln.Finding{}
 	for _, finding := range findings {
 		k := key{id: finding.CVE, pkg: idOf(finding.Package)}
 		grouped[k] = append(grouped[k], finding)
