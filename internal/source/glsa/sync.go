@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -241,7 +242,7 @@ func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
 	if err != nil {
 		return err
 	}
-	if err := removeDirectoriesInTheWay(worktree.Filesystem.Root(), trackedAfter); err != nil {
+	if err := makeRoomForFiles(worktree.Filesystem.Root(), trackedAfter); err != nil {
 		return err
 	}
 	tracked := slices.Concat(trackedBefore, trackedAfter)
@@ -249,29 +250,63 @@ func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
 		return nil // go-git reads an empty list as "every file"
 	}
 	if err := worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked}); err != nil {
-		// go-git writes the new index before the files. Restoring the old
-		// one lets a retry still remove the files upstream deleted.
-		return errors.Join(err, repo.Storer.SetIndex(oldIndex))
+		return errors.Join(err, keepTrackingAttemptedFiles(repo, oldIndex))
 	}
 	return nil
 }
 
-// removeDirectoriesInTheWay deletes directories where a file must go, as
-// git does when upstream turns a directory into a file; go-git would fail.
-// os.Root keeps every path inside root, even through symlinks a hostile
-// upstream may have checked out earlier.
-func removeDirectoriesInTheWay(root string, files []string) error {
+// keepTrackingAttemptedFiles runs after a failed reset. go-git has already
+// written the new index, and may have created some of its files. Tracking
+// both the old and the new entries lets a retry remove every file upstream
+// no longer has, whether it was there before or created by the failed try.
+func keepTrackingAttemptedFiles(repo *git.Repository, oldIndex *index.Index) error {
+	newIndex, err := repo.Storer.Index()
+	if err != nil {
+		return err
+	}
+	for _, entry := range newIndex.Entries {
+		if _, err := oldIndex.Entry(entry.Name); err != nil {
+			oldIndex.Entries = append(oldIndex.Entries, entry)
+		}
+	}
+	return repo.Storer.SetIndex(oldIndex)
+}
+
+// makeRoomForFiles clears what blocks the files upstream now tracks, as
+// git does: a symlink where a directory must be is removed, not followed,
+// and a directory where a file must be is deleted. go-git would fail or
+// write through the symlink. os.Root keeps all of this inside root.
+func makeRoomForFiles(root string, files []string) error {
 	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
 	for _, file := range files {
-		name := filepath.FromSlash(file)
-		if info, err := dir.Lstat(name); err == nil && info.IsDir() {
-			if err := dir.RemoveAll(name); err != nil {
-				return err
-			}
+		if err := makeRoomFor(dir, strings.Split(file, "/")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// makeRoomFor checks the path to one file from the top down, so it never
+// looks through a symlink. Problems it leaves alone surface in the reset.
+func makeRoomFor(dir *os.Root, parts []string) error {
+	for depth := 1; depth <= len(parts); depth++ {
+		path := filepath.Join(parts[:depth]...)
+		info, err := dir.Lstat(path)
+		if err != nil {
+			return nil // nothing here yet, so nothing in the way
+		}
+		isTheFile := depth == len(parts)
+		switch {
+		case info.Mode()&fs.ModeSymlink != 0 && !isTheFile:
+			return dir.Remove(path)
+		case info.IsDir() && isTheFile:
+			return dir.RemoveAll(path)
+		case !info.IsDir():
+			return nil
 		}
 	}
 	return nil

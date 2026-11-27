@@ -247,6 +247,85 @@ func TestSyncStaysInsideDest(t *testing.T) {
 	}
 }
 
+// TestSyncRemovesSymlinkInsideDest checks that a symlink pointing inside
+// the mirror (here at .git) is replaced, not followed, when upstream turns
+// it into a directory.
+func TestSyncRemovesSymlinkInsideDest(t *testing.T) {
+	upstream := newTestUpstream(t)
+	if err := os.Symlink(".git", filepath.Join(upstream, "a")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "add symlink a")
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if err := os.Remove(filepath.Join(upstream, "a")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "remove symlink a")
+	if err := os.MkdirAll(filepath.Join(upstream, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addUpstreamFile(t, upstream, filepath.Join("a", "objects"))
+
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if info, err := os.Stat(filepath.Join(dest, ".git", "objects")); err != nil || !info.IsDir() {
+		t.Errorf(".git/objects must survive (err = %v)", err)
+	}
+	if info, err := os.Lstat(filepath.Join(dest, "a", "objects")); err != nil || !info.Mode().IsRegular() {
+		t.Errorf("a/objects should be a file inside dest (err = %v)", err)
+	}
+}
+
+// TestSyncRemovesFilesFromAPartialFailedUpdate checks that an advisory a
+// failed update managed to write is removed on retry once upstream has
+// withdrawn it.
+func TestSyncRemovesFilesFromAPartialFailedUpdate(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
+	if err := os.MkdirAll(filepath.Join(upstream, "z"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addUpstreamFile(t, upstream, filepath.Join("z", "notes"))
+
+	// A read-only z/ lets the reset write glsa-202601-02.xml, then fail.
+	blocked := filepath.Join(dest, "z")
+	if err := os.Mkdir(blocked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Sync(context.Background(), dest, upstream, nil)
+	if chmodErr := os.Chmod(blocked, 0o755); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil {
+		t.Fatal("expected the update to fail on the read-only directory")
+	}
+	if _, err := os.Stat(filepath.Join(dest, "glsa-202601-02.xml")); err != nil {
+		t.Fatalf("test setup: the failed update should have written the new GLSA: %v", err)
+	}
+
+	if err := os.Remove(filepath.Join(upstream, "glsa-202601-02.xml")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "withdraw glsa-202601-02.xml")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (retry): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "glsa-202601-02.xml")); !os.IsNotExist(err) {
+		t.Errorf("withdrawn glsa-202601-02.xml must be removed on retry (stat err = %v)", err)
+	}
+}
+
 // TestSyncRecoversFromFailedReset checks that a retry after a failed
 // update still removes advisories that upstream deleted, so a withdrawn
 // GLSA can't survive as an untracked file.
