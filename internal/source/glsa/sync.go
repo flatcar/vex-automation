@@ -254,14 +254,15 @@ func setOrigin(repo *git.Repository, url string) error {
 // replaceFile swaps in new contents for path all at once: it writes a
 // temporary file next to it and renames that over path only when the
 // write fully succeeded, so a full disk can't leave path half-written.
+// The file keeps its permissions; a new one is readable only by its owner.
 func replaceFile(path string, contents []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return err
 	}
 	_, err = tmp.Write(contents)
-	if err == nil {
-		err = tmp.Chmod(0o644)
+	if old, statErr := os.Stat(path); err == nil && statErr == nil {
+		err = tmp.Chmod(old.Mode().Perm())
 	}
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr

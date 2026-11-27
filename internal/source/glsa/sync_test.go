@@ -856,6 +856,21 @@ func TestReplaceFile(t *testing.T) {
 	if got, _ := os.ReadFile(config); string(got) != "new" {
 		t.Errorf("config = %q, want %q", got, "new")
 	}
+	if err := os.Chmod(config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(config, []byte("newer")); err != nil {
+		t.Fatalf("replaceFile: %v", err)
+	}
+	created := filepath.Join(dir, "created")
+	if err := replaceFile(created, []byte("new")); err != nil {
+		t.Fatalf("replaceFile: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{config: 0o600, created: 0o600} {
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != want {
+			t.Errorf("%s: mode %v (err %v), want %v", path, info.Mode().Perm(), err, want)
+		}
+	}
 
 	// A non-empty directory can't be renamed over, so the swap fails.
 	blocked := filepath.Join(dir, "blocked")
