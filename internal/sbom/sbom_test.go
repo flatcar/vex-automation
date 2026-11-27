@@ -123,33 +123,33 @@ func TestLoad(t *testing.T) {
 		t.Errorf("Document.Name = %q, want %q", doc.Name, wantName)
 	}
 
-	if len(doc.Packages) != 1 {
-		t.Fatalf("got %d ebuild packages, want 1: %+v", len(doc.Packages), doc.Packages)
+	if len(doc.Ebuilds) != 1 {
+		t.Fatalf("got %d ebuild packages, want 1: %+v", len(doc.Ebuilds), doc.Ebuilds)
 	}
-	got := doc.Packages[0]
-	want := Package{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"}
+	got := doc.Ebuilds[0]
+	want := Package{Ecosystem: Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"}
 	if got != want {
-		t.Errorf("Packages[0] = %+v, want %+v", got, want)
+		t.Errorf("Ebuilds[0] = %+v, want %+v", got, want)
 	}
-	if got.CategoryName() != "sys-fs/fuse" {
-		t.Errorf("CategoryName() = %q, want %q", got.CategoryName(), "sys-fs/fuse")
+	if got.FullName() != "sys-fs/fuse" {
+		t.Errorf("FullName() = %q, want %q", got.FullName(), "sys-fs/fuse")
 	}
 
 	wantOSV := []Package{
-		{Category: "golang", Name: "example.com/some-go-module", Version: "v1.2.3", PURL: "pkg:golang/example.com/some-go-module@v1.2.3"},
-		{Category: "cargo", Name: "some-crate", Version: "2.0.0", PURL: "pkg:cargo/some-crate@2.0.0"},
+		{Ecosystem: Golang, Name: "example.com/some-go-module", Version: "v1.2.3", PURL: "pkg:golang/example.com/some-go-module@v1.2.3"},
+		{Ecosystem: Cargo, Name: "some-crate", Version: "2.0.0", PURL: "pkg:cargo/some-crate@2.0.0"},
 		// Regression: the golang subpath is part of the module path.
-		{Category: "golang", Name: "github.com/golang-jwt/jwt/v4", Version: "v4.5.1", PURL: "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4"},
-		{Category: "golang", Name: "github.com/aws/aws-sdk-go-v2/service/s3", Version: "v1.88.4", PURL: "pkg:golang/github.com/aws/aws-sdk-go-v2@v1.88.4?type=module#service/s3/"},
+		{Ecosystem: Golang, Name: "github.com/golang-jwt/jwt/v4", Version: "v4.5.1", PURL: "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4"},
+		{Ecosystem: Golang, Name: "github.com/aws/aws-sdk-go-v2/service/s3", Version: "v1.88.4", PURL: "pkg:golang/github.com/aws/aws-sdk-go-v2@v1.88.4?type=module#service/s3/"},
 		// Regression: OSV.dev knows stdlib versions without the "go" prefix.
-		{Category: "golang", Name: "stdlib", Version: "1.25.3", PURL: "pkg:golang/stdlib@1.25.3"},
+		{Ecosystem: Golang, Name: "stdlib", Version: "1.25.3", PURL: "pkg:golang/stdlib@1.25.3"},
 	}
-	if len(doc.OSVPackages) != len(wantOSV) {
-		t.Fatalf("got %d OSV packages, want %d: %+v", len(doc.OSVPackages), len(wantOSV), doc.OSVPackages)
+	if len(doc.Modules) != len(wantOSV) {
+		t.Fatalf("got %d OSV packages, want %d: %+v", len(doc.Modules), len(wantOSV), doc.Modules)
 	}
 	for i, w := range wantOSV {
-		if doc.OSVPackages[i] != w {
-			t.Errorf("OSVPackages[%d] = %+v, want %+v", i, doc.OSVPackages[i], w)
+		if doc.Modules[i] != w {
+			t.Errorf("Modules[%d] = %+v, want %+v", i, doc.Modules[i], w)
 		}
 	}
 
@@ -204,7 +204,10 @@ func TestLoadInvalidJSON(t *testing.T) {
 }
 
 func TestOSVVersion(t *testing.T) {
-	cases := []struct{ ecosystem, name, in, want string }{
+	cases := []struct {
+		ecosystem      Ecosystem
+		name, in, want string
+	}{
 		{"golang", "stdlib", "go1.25.3", "1.25.3"},
 		// Regression: Syft appends the GOEXPERIMENT suffix of
 		// runtime.Version(), which OSV.dev reads as a pre-release of
@@ -238,7 +241,7 @@ func TestLoadKeepsIdentityOfUnqueryableModules(t *testing.T) {
 	}
 	var got []string
 	for _, sk := range doc.Skipped {
-		got = append(got, sk.Ecosystem+":"+sk.Module)
+		got = append(got, string(sk.Ecosystem)+":"+sk.Module)
 	}
 	if want := []string{"golang:github.com/opencontainers/runc", "golang:go.etcd.io/etcd/etcdctl/v3"}; !slices.Equal(got, want) {
 		t.Errorf("skipped identities = %v, want %v", got, want)

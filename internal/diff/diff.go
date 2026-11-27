@@ -1,13 +1,7 @@
-// Package diff compares the vulnerability findings of two SBOMs (an older
-// and a newer Flatcar release) matched against the same vulnerability data,
-// and classifies each (vulnerability, package) pair as fixed, removed,
-// introduced, still affected or needing review. It is pure logic: loading
-// SBOMs and running the matchers is up to the caller (cli.runDiff).
-//
-// Its main use is drafting the "Security fixes" section of the release
-// notes (FormatChangelog), so it errs towards "review" whenever a side
-// couldn't be fully checked: a wrong "fixed" line would be published as a
-// claim about the release.
+// Package diff compares the findings of two Flatcar releases, classifying
+// each (vulnerability, package) pair as fixed, removed, introduced, still
+// affected or needing review, and drafts the "Security fixes" release
+// notes. See README.md.
 package diff
 
 import (
@@ -15,8 +9,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 // SchemaVersion is the version of the JSON document produced from Result.
@@ -34,14 +28,14 @@ const (
 	// OSV.dev returns nothing for an unaffected version.
 	StateClean State = "clean"
 	// StateAffected means the most severe status among that side's findings for
-	// the key is affected (match.StatusAffected).
-	StateAffected State = State(match.StatusAffected)
-	// StateUnderInvestigation mirrors match.StatusUnderInvestigation.
-	StateUnderInvestigation State = State(match.StatusUnderInvestigation)
-	// StateFixed mirrors match.StatusFixed.
-	StateFixed State = State(match.StatusFixed)
-	// StateNotAffected mirrors match.StatusNotAffected.
-	StateNotAffected State = State(match.StatusNotAffected)
+	// the key is affected (vuln.StatusAffected).
+	StateAffected State = State(vuln.StatusAffected)
+	// StateUnderInvestigation mirrors vuln.StatusUnderInvestigation.
+	StateUnderInvestigation State = State(vuln.StatusUnderInvestigation)
+	// StateFixed mirrors vuln.StatusFixed.
+	StateFixed State = State(vuln.StatusFixed)
+	// StateNotAffected mirrors vuln.StatusNotAffected.
+	StateNotAffected State = State(vuln.StatusNotAffected)
 	// StateUnchecked means no finding shows the package affected, but that
 	// side also ships a copy whose version could not be checked (see
 	// sbom.SkippedPackage.Module), so it may still be affected.
@@ -73,7 +67,7 @@ var bucketOrder = []Bucket{BucketFixed, BucketRemoved, BucketIntroduced, BucketS
 // Side is one release: its SBOM and the findings matched against it.
 type Side struct {
 	Doc      sbom.Document
-	Findings []match.Finding
+	Findings []vuln.Finding
 }
 
 // Input is the data Compute compares. Both sides must have been matched
@@ -118,14 +112,13 @@ type Entry struct {
 	Bucket Bucket `json:"bucket"`
 	// Package is "category/name" for ebuilds and the module path for
 	// golang/cargo packages.
-	Package string `json:"package"`
-	// Ecosystem is "ebuild", "golang" or "cargo".
-	Ecosystem  string   `json:"ecosystem"`
-	Old        SideInfo `json:"old"`
-	New        SideInfo `json:"new"`
-	Sources    []string `json:"sources"`
-	Advisories []string `json:"advisories"`
-	Notes      []string `json:"notes"`
+	Package    string         `json:"package"`
+	Ecosystem  sbom.Ecosystem `json:"ecosystem"`
+	Old        SideInfo       `json:"old"`
+	New        SideInfo       `json:"new"`
+	Sources    []string       `json:"sources"`
+	Advisories []string       `json:"advisories"`
+	Notes      []string       `json:"notes"`
 }
 
 // SideInfo describes a key on one side of the diff.
@@ -151,29 +144,38 @@ type Skipped struct {
 	Reason  string `json:"reason"`
 	// Ecosystem and Module identify a golang/cargo module skipped only
 	// because its version can't be queried (see sbom.SkippedPackage).
-	Ecosystem string `json:"ecosystem,omitempty"`
-	Module    string `json:"module,omitempty"`
+	Ecosystem sbom.Ecosystem `json:"ecosystem,omitempty"`
+	Module    string         `json:"module,omitempty"`
 }
 
 // key identifies one entry: a vulnerability in a package.
 type key struct {
-	id          string
-	packageName string // sbom.Package.CategoryName()
+	id  string
+	pkg packageID
+}
+
+// packageID identifies a package regardless of its version. The ecosystem
+// is part of it because packages of different ecosystems may share a name.
+type packageID struct {
+	ecosystem sbom.Ecosystem
+	name      string // sbom.Package.FullName()
+}
+
+func idOf(pkg sbom.Package) packageID {
+	return packageID{ecosystem: pkg.Ecosystem, name: pkg.FullName()}
 }
 
 // presence is what one release ships of one package.
 type presence struct {
-	ecosystem string
-	name      string
-	versions  map[string]bool
+	versions map[string]bool
 	// unchecked is set if some copy has a version that couldn't be checked.
 	unchecked bool
 }
 
 // comparedSide is one release, prepared for comparison.
 type comparedSide struct {
-	packages map[string]*presence // by sbom.Package.CategoryName()
-	findings map[key][]match.Finding
+	packages map[packageID]*presence
+	findings map[key][]vuln.Finding
 }
 
 func prepare(s Side) comparedSide {
@@ -233,12 +235,6 @@ func compareKey(k key, oldSide, newSide comparedSide) (Entry, bool) {
 		return Entry{}, false
 	}
 
-	// classify only reports packages present on at least one side.
-	pkg := oldSide.packages[k.packageName]
-	if pkg == nil {
-		pkg = newSide.packages[k.packageName]
-	}
-
 	var sources, advisories, notes []string
 	for _, finding := range append(slices.Clone(oldSide.findings[k]), newSide.findings[k]...) {
 		sources = append(sources, finding.Source)
@@ -248,10 +244,10 @@ func compareKey(k key, oldSide, newSide comparedSide) (Entry, bool) {
 	return Entry{
 		ID:         k.id,
 		Bucket:     bucket,
-		Package:    pkg.name,
-		Ecosystem:  pkg.ecosystem,
-		Old:        SideInfo{State: oldState, Versions: versionsOf(oldSide.packages[k.packageName])},
-		New:        SideInfo{State: newState, Versions: versionsOf(newSide.packages[k.packageName])},
+		Package:    k.pkg.name,
+		Ecosystem:  k.pkg.ecosystem,
+		Old:        SideInfo{State: oldState, Versions: versionsOf(oldSide.packages[k.pkg])},
+		New:        SideInfo{State: newState, Versions: versionsOf(newSide.packages[k.pkg])},
 		Sources:    sortedNonEmpty(sources),
 		Advisories: sortedNonEmpty(advisories),
 		Notes:      sortedNonEmpty(notes),
@@ -301,7 +297,7 @@ func (s *Summary) add(b Bucket) {
 // its findings. A copy that couldn't be checked makes it unchecked, unless
 // a finding already shows it affected.
 func (s comparedSide) stateOf(k key) State {
-	pkg := s.packages[k.packageName]
+	pkg := s.packages[k.pkg]
 	if pkg == nil {
 		return StateAbsent
 	}
@@ -312,61 +308,44 @@ func (s comparedSide) stateOf(k key) State {
 		}
 		return StateClean
 	}
-	worst := slices.MinFunc(findings, func(a, b match.Finding) int {
-		return match.Severity(a.Status) - match.Severity(b.Status)
+	worst := slices.MinFunc(findings, func(a, b vuln.Finding) int {
+		return vuln.Severity(a.Status) - vuln.Severity(b.Status)
 	}).Status
-	if worst != match.StatusAffected && pkg.unchecked {
+	if worst != vuln.StatusAffected && pkg.unchecked {
 		return StateUnchecked
 	}
 	return State(worst)
 }
 
 // packagesOf lists what doc ships, including copies that couldn't be checked.
-func packagesOf(doc sbom.Document) map[string]*presence {
-	packages := map[string]*presence{}
-	for _, pkg := range slices.Concat(doc.Packages, doc.OSVPackages) {
+func packagesOf(doc sbom.Document) map[packageID]*presence {
+	packages := map[packageID]*presence{}
+	for _, pkg := range slices.Concat(doc.Ebuilds, doc.Modules) {
 		addPresence(packages, pkg)
 	}
 	for _, skipped := range doc.Skipped {
 		if skipped.Module != "" {
-			pkg := sbom.Package{Category: skipped.Ecosystem, Name: skipped.Module, Version: skipped.Version}
+			pkg := sbom.Package{Ecosystem: skipped.Ecosystem, Name: skipped.Module, Version: skipped.Version}
 			addPresence(packages, pkg).unchecked = true
 		}
 	}
 	return packages
 }
 
-func addPresence(packages map[string]*presence, pkg sbom.Package) *presence {
-	entry := packages[pkg.CategoryName()]
+func addPresence(packages map[packageID]*presence, pkg sbom.Package) *presence {
+	entry := packages[idOf(pkg)]
 	if entry == nil {
-		entry = &presence{ecosystem: ecosystemOf(pkg), name: displayName(pkg), versions: map[string]bool{}}
-		packages[pkg.CategoryName()] = entry
+		entry = &presence{versions: map[string]bool{}}
+		packages[idOf(pkg)] = entry
 	}
 	entry.versions[pkg.Version] = true
 	return entry
 }
 
-// ecosystemOf returns "golang" or "cargo" for OSV packages (sbom stores
-// these in Category), and "ebuild" for all others.
-func ecosystemOf(pkg sbom.Package) string {
-	if pkg.Category == "golang" || pkg.Category == "cargo" {
-		return pkg.Category
-	}
-	return "ebuild"
-}
-
-// displayName is "category/name" for ebuilds and the module path otherwise.
-func displayName(pkg sbom.Package) string {
-	if ecosystemOf(pkg) == "ebuild" {
-		return pkg.CategoryName()
-	}
-	return pkg.Name
-}
-
-func groupFindings(findings []match.Finding) map[key][]match.Finding {
-	grouped := map[key][]match.Finding{}
+func groupFindings(findings []vuln.Finding) map[key][]vuln.Finding {
+	grouped := map[key][]vuln.Finding{}
 	for _, finding := range findings {
-		k := key{id: finding.CVE, packageName: finding.Package.CategoryName()}
+		k := key{id: finding.CVE, pkg: idOf(finding.Package)}
 		grouped[k] = append(grouped[k], finding)
 	}
 	return grouped

@@ -41,8 +41,9 @@ nfpms:
     description: Generates OpenVEX documents and CVE release-note diffs for Flatcar releases.
     license: Apache-2.0
     bindir: /usr/bin
-    # sync-glsa shells out to git.
-    dependencies:
+    # sync-glsa uses go-git; the git binary is only needed when --repo is a
+    # local path.
+    recommends:
       - git
     archlinux:
       packager: Flatcar Maintainers <maintainers@flatcar-linux.org>

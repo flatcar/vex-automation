@@ -1,4 +1,4 @@
-package match
+package osv
 
 import (
 	"fmt"
@@ -6,11 +6,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/flatcar/vex-automation/internal/osv"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 // This file corrects curl's GLSA findings using curl's own advisories. Only
-// the diff command uses it (see cli.addOSVFindings for why): RunGLSA makes
+// the diff command uses it (see cli.addOSVFindings for why): glsa.Match makes
 // the findings, CurlAdvisoryIDs says which advisories to fetch from
 // OSV.dev, and ApplyCurlAdvisories rewrites the findings they disprove.
 
@@ -31,7 +31,7 @@ var plainCurlVersion = regexp.MustCompile(`^\d+\.\d+(\.\d+)*(-r\d+)?$`)
 // CurlAdvisoryIDs returns the OSV.dev IDs of curl's own advisories for
 // every CVE that a GLSA reports curl as affected by, sorted and
 // deduplicated.
-func CurlAdvisoryIDs(findings []Finding) []string {
+func CurlAdvisoryIDs(findings []vuln.Finding) []string {
 	var ids []string
 	for _, finding := range findings {
 		if isCurlGLSAAffected(finding) {
@@ -50,7 +50,7 @@ func CurlAdvisoryIDs(findings []Finding) []string {
 // finding becomes not_affected. Findings without an advisory, or whose
 // version does not map to an upstream release (see plainCurlVersion), are
 // kept. The input is not modified.
-func ApplyCurlAdvisories(findings []Finding, advisories map[string]osv.Vulnerability) []Finding {
+func ApplyCurlAdvisories(findings []vuln.Finding, advisories map[string]Vulnerability) []vuln.Finding {
 	rechecked := slices.Clone(findings)
 	for i, finding := range rechecked {
 		if !isCurlGLSAAffected(finding) {
@@ -64,12 +64,12 @@ func ApplyCurlAdvisories(findings []Finding, advisories map[string]osv.Vulnerabi
 		if slices.Contains(advisory.AffectedVersions, upstreamVersion) {
 			continue
 		}
-		rechecked[i].Status = StatusNotAffected
+		rechecked[i].Status = vuln.StatusNotAffected
 		rechecked[i].Note = fmt.Sprintf("curl's own advisory %s does not list version %s as affected", advisory.ID, upstreamVersion)
 	}
 	return rechecked
 }
 
-func isCurlGLSAAffected(finding Finding) bool {
-	return finding.Source == SourceGLSA && finding.Status == StatusAffected && finding.Package.CategoryName() == curlPackage
+func isCurlGLSAAffected(finding vuln.Finding) bool {
+	return finding.Source == vuln.SourceGLSA && finding.Status == vuln.StatusAffected && finding.Package.FullName() == curlPackage
 }

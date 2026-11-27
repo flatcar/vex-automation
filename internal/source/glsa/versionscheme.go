@@ -1,15 +1,15 @@
-package match
+package glsa
 
 import (
 	"fmt"
 	"regexp"
 	"slices"
 
-	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/portage"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
-// This file holds per-package exceptions to GLSA matching. RunGLSA calls
+// This file holds per-package exceptions to GLSA matching. Match calls
 // evaluatePackage for every package; for most it simply calls evaluate,
 // but a package listed in versionSchemes first has its versions rewritten
 // so that Flatcar's and Gentoo's versions can be compared at all.
@@ -17,7 +17,7 @@ import (
 // versionTranslator rewrites an installed version and a GLSA package entry
 // into versions that can be compared with each other, or explains why they
 // can't be.
-type versionTranslator func(installed string, affected glsa.AffectedPackage) (string, glsa.AffectedPackage, error)
+type versionTranslator func(installed string, affected AffectedPackage) (string, AffectedPackage, error)
 
 // versionSchemes lists packages, by category/name, whose Flatcar versions
 // follow a different scheme than the Gentoo versions in GLSAs, so comparing
@@ -28,15 +28,15 @@ var versionSchemes = map[string]versionTranslator{
 
 // evaluatePackage is evaluate with the package's version scheme exception,
 // if any, applied first. A range that can't be translated makes the result
-// StatusUnderInvestigation, never a guessed status.
-func evaluatePackage(categoryName, installedVersion string, affected glsa.AffectedPackage) (Status, string) {
+// vuln.StatusUnderInvestigation, never a guessed status.
+func evaluatePackage(categoryName, installedVersion string, affected AffectedPackage) (vuln.Status, string) {
 	translate, ok := versionSchemes[categoryName]
 	if !ok {
 		return evaluate(installedVersion, affected)
 	}
 	translatedVersion, translatedAffected, err := translate(installedVersion, affected)
 	if err != nil {
-		return StatusUnderInvestigation, fmt.Sprintf("%s: %v", categoryName, err)
+		return vuln.StatusUnderInvestigation, fmt.Sprintf("%s: %v", categoryName, err)
 	}
 	return evaluate(translatedVersion, translatedAffected)
 }
@@ -82,7 +82,7 @@ const (
 // holds for GLSA 202610-01 (20260816.3.125 followed 20260601.3.112.5). A
 // date-only bump within one NSS release would also produce such a pair and
 // can't be told apart from the GLSA alone.
-func translateCACertificates(installed string, affected glsa.AffectedPackage) (string, glsa.AffectedPackage, error) {
+func translateCACertificates(installed string, affected AffectedPackage) (string, AffectedPackage, error) {
 	nss := revisionSuffix.ReplaceAllString(installed, "")
 	if gentooCACertsNSS.MatchString(nss) || gentooCACertsDate.MatchString(nss) {
 		return installed, affected, nil // already Gentoo's scheme
@@ -107,8 +107,8 @@ func translateCACertificates(installed string, affected glsa.AffectedPackage) (s
 }
 
 // toNSSRanges rewrites Gentoo ca-certificates ranges into NSS versions.
-func toNSSRanges(installed, nss string, ranges []glsa.VersionRange) ([]glsa.VersionRange, error) {
-	translated := make([]glsa.VersionRange, len(ranges))
+func toNSSRanges(installed, nss string, ranges []VersionRange) ([]VersionRange, error) {
+	translated := make([]VersionRange, len(ranges))
 	for i, r := range ranges {
 		if !slices.Contains([]string{"lt", "le", "eq", "ge", "gt"}, r.Op) {
 			return nil, fmt.Errorf("can't compare NSS version %s with GLSA range %s %s", installed, r.Op, r.Version)
@@ -117,7 +117,7 @@ func toNSSRanges(installed, nss string, ranges []glsa.VersionRange) ([]glsa.Vers
 		if err != nil {
 			return nil, err
 		}
-		translated[i] = glsa.VersionRange{Op: r.Op, Version: version, Slot: r.Slot}
+		translated[i] = VersionRange{Op: r.Op, Version: version, Slot: r.Slot}
 	}
 	return translated, nil
 }
@@ -142,9 +142,9 @@ func toNSSVersion(installed, nss, gentooVersion string) (string, error) {
 // version, unless they are the decidable pair of a vulnerable "lt X" and
 // an unaffected "ge X" with the same unrevised X (see
 // translateCACertificates).
-func checkCACertsBoundary(installed, nss string, affected glsa.AffectedPackage) error {
+func checkCACertsBoundary(installed, nss string, affected AffectedPackage) error {
 	var conditions, versions []string
-	addBoundaries := func(kind string, ranges []glsa.VersionRange) {
+	addBoundaries := func(kind string, ranges []VersionRange) {
 		for _, r := range ranges {
 			if hasNSSVersion(r.Version, nss) {
 				conditions = append(conditions, kind+" "+r.Op)

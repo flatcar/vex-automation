@@ -28,8 +28,8 @@ proof-of-concept that derives VEX statements purely from data Flatcar already pu
 See [`docs/current-state.md`](./docs/current-state.md) for how Flatcar's existing
 CVE/GLSA handling works today, and [`docs/plan.md`](./docs/plan.md) for the phased design
 of this automation (Phase 1 PoC scope, architecture, and future-phase candidates).
-Start with [`docs/architecture.md`](./docs/architecture.md) for what the tool does, how and
-why.
+Start with [`internal/README.md`](./internal/README.md) for what the tool does, how and
+why; each package under `internal/` has a short README of its own.
 
 This repository is maintained by the Flatcar community and contributors. Development and design decisions are guided by the principles of transparency, modularity, and collaboration.
 
@@ -87,7 +87,9 @@ curl -LO https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_prod
 
 `sync-glsa` clones Gentoo's GLSA advisory corpus into a local directory. Run it once to
 fetch everything, and run it again any time later to update to the latest advisories
-in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step):
+in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step). It has git
+built in, so git does not need to be installed, and the result line names the exact
+upstream commit the advisories come from:
 
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data
@@ -98,10 +100,12 @@ Cloning https://anongit.gentoo.org/git/data/glsa.git into ./glsa-data...
 Cloned GLSA mirror at ./glsa-data (3870 advisories, bffa9cc50d60)
 ```
 
-Each step is printed to stderr as it starts (plus git's progress meter on a terminal), and
+Each step is printed to stderr as it starts (plus a download progress meter on a terminal), and
 the result line goes to stdout. Gentoo's server can take a few minutes to answer.
 
-Running the same command again later updates the existing mirror instead of re-cloning:
+Running the same command again later updates the existing mirror instead of re-cloning.
+The update makes the directory match upstream exactly, so don't keep other files in it;
+if it finds local changes it says how many it discards:
 
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data
@@ -119,8 +123,13 @@ Useful flags:
 - `--dest` – where to put (or update) the local mirror. Defaults to `glsa-data`.
 - `--repo` – sync from a different Git remote instead of Gentoo's canonical
   `anongit.gentoo.org/git/data/glsa.git`. Re-running with a different `--repo` against an
-  existing `--dest` re-points it at the new remote.
+  existing `--dest` re-points it at the new remote. A local repository path also works, but
+  needs git installed.
 - `--timeout` – cap how long the clone/update is allowed to run before giving up (default `5m`).
+
+You can also skip `sync-glsa` and clone the repository yourself with
+`git clone --depth 1 https://anongit.gentoo.org/git/data/glsa.git glsa-data`; `--glsa-dir`
+accepts any directory of GLSA XML files.
 
 #### 3. Generate the VEX document
 
@@ -159,7 +168,7 @@ A range boundary at Flatcar's own NSS version is only trusted for the usual `lt 
 pair without a revision, assuming X is Gentoo's first bundle for that NSS release (a fix made
 by a later date-only bump can't be told apart from the GLSA). Any other boundary there, such as
 a revision bump, and any range that can't be translated is reported as `under_investigation`. Further
-exceptions go in `internal/match/versionscheme.go`.
+exceptions go in `internal/source/glsa/versionscheme.go`.
 
 `generate` fails on an SBOM that isn't SPDX or has no matchable package (no ebuild package
 at all with `--osv=false`), and on any GLSA
@@ -197,8 +206,8 @@ ID when none has a CVE.
 Unlike GLSA, this requires live network access and there is no local corpus to sync
 first, since OSV.dev's API is queried directly with each package's exact version (see
 [`docs/multi-source-proposal.md`](./docs/multi-source-proposal.md) for the full design
-rationale). Paginated results are followed, and rate-limit or server errors are retried
-with backoff. Pass `--osv=false` to work offline; a warning is logged and the document's
+rationale). Paginated results are followed, and network, rate-limit and server errors are
+retried with backoff. Pass `--osv=false` to work offline; a warning is logged and the document's
 `tooling` field records that golang/cargo packages were not checked.
 
 Useful flags:

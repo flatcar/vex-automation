@@ -1,10 +1,5 @@
-// Package vexgen turns match findings into an OpenVEX document, using the
-// official github.com/openvex/go-vex library.
-//
-// This is the last step of the generate command and its whole point: an
-// OpenVEX document tells users and their scanners, per CVE, whether this
-// Flatcar release is affected, fixed, not affected or still being looked
-// at, so they don't have to work it out from the SBOM themselves.
+// Package vexgen turns vulnerability findings into an OpenVEX document,
+// using the official github.com/openvex/go-vex library. See README.md.
 package vexgen
 
 import (
@@ -15,9 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flatcar/vex-automation/internal/vuln"
 	"github.com/openvex/go-vex/pkg/vex"
-
-	"github.com/flatcar/vex-automation/internal/match"
 )
 
 // Metadata holds the document-level fields.
@@ -35,15 +29,15 @@ type Metadata struct {
 // sourceLabels names each finding source in remediation text, in the
 // order they are listed. A new source must be added here to be cited.
 var sourceLabels = []struct{ source, label string }{
-	{match.SourceGLSA, "Gentoo GLSA"},
-	{match.SourceOSV, "OSV.dev advisory"},
+	{vuln.SourceGLSA, "Gentoo GLSA"},
+	{vuln.SourceOSV, "OSV.dev advisory"},
 }
 
 // Build makes a document with one statement per vulnerability. A release
 // can't be both fixed and affected, so when the findings of a
 // vulnerability disagree, the statement takes the most severe status (see
-// match.StatusPrecedence) and lists the packages with that status.
-func Build(findings []match.Finding, meta Metadata) (*vex.VEX, error) {
+// vuln.StatusPrecedence) and lists the packages with that status.
+func Build(findings []vuln.Finding, meta Metadata) (*vex.VEX, error) {
 	if meta.ProductID == "" {
 		return nil, errors.New("vexgen: Metadata.ProductID must not be empty")
 	}
@@ -59,7 +53,7 @@ func Build(findings []match.Finding, meta Metadata) (*vex.VEX, error) {
 	doc.Tooling = meta.Tooling
 	doc.Timestamp = &timestamp
 
-	findingsByID := map[string][]match.Finding{}
+	findingsByID := map[string][]vuln.Finding{}
 	for _, finding := range findings {
 		findingsByID[finding.CVE] = append(findingsByID[finding.CVE], finding)
 	}
@@ -81,9 +75,9 @@ func Build(findings []match.Finding, meta Metadata) (*vex.VEX, error) {
 
 // mostSevere returns the findings that have the most severe status, or
 // nil if no finding has a known status.
-func mostSevere(findings []match.Finding) []match.Finding {
-	for _, status := range match.StatusPrecedence {
-		var withStatus []match.Finding
+func mostSevere(findings []vuln.Finding) []vuln.Finding {
+	for _, status := range vuln.StatusPrecedence {
+		var withStatus []vuln.Finding
 		for _, finding := range findings {
 			if finding.Status == status {
 				withStatus = append(withStatus, finding)
@@ -97,7 +91,7 @@ func mostSevere(findings []match.Finding) []match.Finding {
 }
 
 // newStatement describes one vulnerability; all findings share its status.
-func newStatement(id string, findings []match.Finding, productID string) vex.Statement {
+func newStatement(id string, findings []vuln.Finding, productID string) vex.Statement {
 	status := findings[0].Status
 	statement := vex.Statement{
 		Vulnerability: vex.Vulnerability{Name: vex.VulnerabilityID(id)},
@@ -109,9 +103,9 @@ func newStatement(id string, findings []match.Finding, productID string) vex.Sta
 		}},
 	}
 	switch status {
-	case match.StatusAffected:
+	case vuln.StatusAffected:
 		statement.ActionStatement = actionStatement(id, findings)
-	case match.StatusNotAffected:
+	case vuln.StatusNotAffected:
 		statement.Justification = vex.VulnerableCodeNotPresent
 		statement.ImpactStatement = "The installed version is outside every vulnerable version range listed by the advisory."
 	}
@@ -120,7 +114,7 @@ func newStatement(id string, findings []match.Finding, productID string) vex.Sta
 
 // statusNotes joins the distinct notes of findings, e.g. why a
 // vulnerability is under investigation.
-func statusNotes(findings []match.Finding) string {
+func statusNotes(findings []vuln.Finding) string {
 	var notes []string
 	for _, finding := range findings {
 		if finding.Note != "" {
@@ -131,7 +125,7 @@ func statusNotes(findings []match.Finding) string {
 }
 
 // subcomponents lists the affected packages by purl.
-func subcomponents(findings []match.Finding) []vex.Subcomponent {
+func subcomponents(findings []vuln.Finding) []vex.Subcomponent {
 	var purls []string
 	for _, finding := range findings {
 		purls = append(purls, finding.Package.PURL)
@@ -147,7 +141,7 @@ func subcomponents(findings []match.Finding) []vex.Subcomponent {
 
 // actionStatement tells the reader to update, citing the advisories per
 // source, e.g. "... (see Gentoo GLSA 202604-03; OSV.dev advisory GO-2026-1)."
-func actionStatement(id string, findings []match.Finding) string {
+func actionStatement(id string, findings []vuln.Finding) string {
 	var citations []string
 	for _, source := range sourceLabels {
 		var refIDs []string

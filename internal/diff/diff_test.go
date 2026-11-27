@@ -7,34 +7,34 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 func ebuild(catName, version string) sbom.Package {
 	cat, name, _ := strings.Cut(catName, "/")
-	return sbom.Package{Category: cat, Name: name, Version: version, PURL: "pkg:ebuild/" + catName + "@" + version}
+	return sbom.Package{Ecosystem: sbom.Ebuild, Category: cat, Name: name, Version: version, PURL: "pkg:ebuild/" + catName + "@" + version}
 }
 
 func gomod(module, version string) sbom.Package {
-	return sbom.Package{Category: "golang", Name: module, Version: version, PURL: "pkg:golang/" + module + "@" + version}
+	return sbom.Package{Ecosystem: sbom.Golang, Name: module, Version: version, PURL: "pkg:golang/" + module + "@" + version}
 }
 
-func glsaFinding(id string, pkg sbom.Package, status match.Status, ref string) match.Finding {
-	return match.Finding{CVE: id, Source: match.SourceGLSA, RefID: ref, Package: pkg, Status: status}
+func glsaFinding(id string, pkg sbom.Package, status vuln.Status, ref string) vuln.Finding {
+	return vuln.Finding{CVE: id, Source: vuln.SourceGLSA, RefID: ref, Package: pkg, Status: status}
 }
 
-func osvFinding(id string, pkg sbom.Package, ref string) match.Finding {
-	return match.Finding{CVE: id, Source: match.SourceOSV, RefID: ref, Package: pkg, Status: match.StatusAffected}
+func osvFinding(id string, pkg sbom.Package, ref string) vuln.Finding {
+	return vuln.Finding{CVE: id, Source: vuln.SourceOSV, RefID: ref, Package: pkg, Status: vuln.StatusAffected}
 }
 
-func side(pkgs []sbom.Package, findings ...match.Finding) Side {
+func side(pkgs []sbom.Package, findings ...vuln.Finding) Side {
 	var doc sbom.Document
 	for _, p := range pkgs {
-		if p.Category == "golang" || p.Category == "cargo" {
-			doc.OSVPackages = append(doc.OSVPackages, p)
+		if p.Ecosystem == sbom.Ebuild {
+			doc.Ebuilds = append(doc.Ebuilds, p)
 		} else {
-			doc.Packages = append(doc.Packages, p)
+			doc.Modules = append(doc.Modules, p)
 		}
 	}
 	return Side{Doc: doc, Findings: findings}
@@ -51,8 +51,8 @@ func TestComputeBuckets(t *testing.T) {
 	}{
 		{
 			name: "GLSA affected then fixed",
-			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-1", fuseOld, match.StatusAffected, "202604-03")),
-			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-1", fuseNew, match.StatusFixed, "202604-03")),
+			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-1", fuseOld, vuln.StatusAffected, "202604-03")),
+			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-1", fuseNew, vuln.StatusFixed, "202604-03")),
 			want: []Entry{{
 				ID: "CVE-1", Bucket: BucketFixed, Package: "sys-fs/fuse", Ecosystem: "ebuild",
 				Old:     SideInfo{State: StateAffected, Versions: []string{"3.17.0"}},
@@ -106,8 +106,8 @@ func TestComputeBuckets(t *testing.T) {
 		},
 		{
 			name: "still affected",
-			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-5", fuseOld, match.StatusAffected, "1")),
-			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-5", fuseNew, match.StatusAffected, "1")),
+			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-5", fuseOld, vuln.StatusAffected, "1")),
+			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-5", fuseNew, vuln.StatusAffected, "1")),
 			want: []Entry{{
 				ID: "CVE-5", Bucket: BucketStillAffected, Package: "sys-fs/fuse", Ecosystem: "ebuild",
 				Old:     SideInfo{State: StateAffected, Versions: []string{"3.17.0"}},
@@ -117,11 +117,11 @@ func TestComputeBuckets(t *testing.T) {
 		},
 		{
 			name: "under investigation goes to review with its note",
-			old: side([]sbom.Package{fuseOld}, match.Finding{
-				CVE: "CVE-6", Source: match.SourceGLSA, RefID: "1", Package: fuseOld,
-				Status: match.StatusUnderInvestigation, Note: "slot",
+			old: side([]sbom.Package{fuseOld}, vuln.Finding{
+				CVE: "CVE-6", Source: vuln.SourceGLSA, RefID: "1", Package: fuseOld,
+				Status: vuln.StatusUnderInvestigation, Note: "slot",
 			}),
-			new: side([]sbom.Package{fuseNew}, glsaFinding("CVE-6", fuseNew, match.StatusFixed, "1")),
+			new: side([]sbom.Package{fuseNew}, glsaFinding("CVE-6", fuseNew, vuln.StatusFixed, "1")),
 			want: []Entry{{
 				ID: "CVE-6", Bucket: BucketReview, Package: "sys-fs/fuse", Ecosystem: "ebuild",
 				Old:     SideInfo{State: StateUnderInvestigation, Versions: []string{"3.17.0"}},
@@ -131,8 +131,8 @@ func TestComputeBuckets(t *testing.T) {
 		},
 		{
 			name: "fixed on both sides is not reported",
-			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-7", fuseOld, match.StatusFixed, "1")),
-			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-7", fuseNew, match.StatusFixed, "1")),
+			old:  side([]sbom.Package{fuseOld}, glsaFinding("CVE-7", fuseOld, vuln.StatusFixed, "1")),
+			new:  side([]sbom.Package{fuseNew}, glsaFinding("CVE-7", fuseNew, vuln.StatusFixed, "1")),
 			want: []Entry{},
 		},
 		{
@@ -165,11 +165,11 @@ func TestComputeSummaryAndOrder(t *testing.T) {
 	a, b := ebuild("net-misc/curl", "8.0"), ebuild("net-misc/curl", "8.1")
 	z := gomod("z.example/mod", "v1")
 	old := side([]sbom.Package{a, z},
-		glsaFinding("CVE-B", a, match.StatusAffected, "1"),
-		glsaFinding("CVE-A", a, match.StatusAffected, "1"),
+		glsaFinding("CVE-B", a, vuln.StatusAffected, "1"),
+		glsaFinding("CVE-A", a, vuln.StatusAffected, "1"),
 		osvFinding("CVE-Z", z, "GO-Z"),
 	)
-	nw := side([]sbom.Package{b}, glsaFinding("CVE-C", b, match.StatusAffected, "2"))
+	nw := side([]sbom.Package{b}, glsaFinding("CVE-C", b, vuln.StatusAffected, "2"))
 
 	got := Compute(Input{Old: old, New: nw})
 
@@ -194,13 +194,13 @@ func TestComputeSummaryAndOrder(t *testing.T) {
 
 func TestComputeIsDeterministic(t *testing.T) {
 	var pkgs []sbom.Package
-	var findings []match.Finding
+	var findings []vuln.Finding
 	for i, v := range []string{"v1", "v2", "v3", "v4", "v5"} {
 		p := gomod("example.com/m"+v, v)
 		pkgs = append(pkgs, p)
 		findings = append(findings, osvFinding("CVE-"+v, p, "GO-"+v), osvFinding("CVE-x", p, "GO-x"))
 		if i%2 == 0 {
-			findings = append(findings, glsaFinding("CVE-y", p, match.StatusFixed, "9"))
+			findings = append(findings, glsaFinding("CVE-y", p, vuln.StatusFixed, "9"))
 		}
 	}
 	first, _ := json.Marshal(Compute(Input{Old: side(pkgs, findings...), New: side(nil)}))
@@ -238,8 +238,8 @@ func TestComputeNotCheckedAndEmptySlices(t *testing.T) {
 func TestComputeUnderInvestigationThenAffectedIsReview(t *testing.T) {
 	fuseOld, fuseNew := ebuild("sys-fs/fuse", "3.17.0"), ebuild("sys-fs/fuse", "3.18.1")
 	got := Compute(Input{
-		Old: side([]sbom.Package{fuseOld}, match.Finding{CVE: "CVE-1", Source: match.SourceGLSA, RefID: "1", Package: fuseOld, Status: match.StatusUnderInvestigation}),
-		New: side([]sbom.Package{fuseNew}, glsaFinding("CVE-1", fuseNew, match.StatusAffected, "1")),
+		Old: side([]sbom.Package{fuseOld}, vuln.Finding{CVE: "CVE-1", Source: vuln.SourceGLSA, RefID: "1", Package: fuseOld, Status: vuln.StatusUnderInvestigation}),
+		New: side([]sbom.Package{fuseNew}, glsaFinding("CVE-1", fuseNew, vuln.StatusAffected, "1")),
 	})
 	if len(got.Entries) != 1 || got.Entries[0].Bucket != BucketReview {
 		t.Fatalf("entries = %+v, want one review entry", got.Entries)

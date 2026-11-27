@@ -6,14 +6,11 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/flatcar/vex-automation/internal/match"
-	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/source/glsa"
 	"github.com/flatcar/vex-automation/internal/vexgen"
+	"github.com/spf13/cobra"
 )
 
 type generateOptions struct {
@@ -64,7 +61,7 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return err
 	}
 	logSkipped(doc.Skipped)
-	if !opts.osvEnabled && len(doc.Packages) == 0 {
+	if !opts.osvEnabled && len(doc.Ebuilds) == 0 {
 		return fmt.Errorf("SBOM %s has no ebuild package to match against GLSAs, and OSV.dev matching is disabled (--osv=false): nothing would be checked", opts.sbomPath)
 	}
 
@@ -81,16 +78,16 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 
 	// Both matchers return findings in the same form, so the document can
 	// be built from one combined list.
-	findings := match.RunGLSA(doc.Packages, glsas, opts.arch)
+	findings := glsa.Match(doc.Ebuilds, glsas, opts.arch)
 	if opts.osvEnabled {
-		osvFindings, err := matchOSV(cmd, doc.OSVPackages, opts.osvBaseURL, opts.osvTimeout)
+		findingsPerSBOM, err := opts.matchOSV(cmd.Context(), doc)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
-		findings = append(findings, osvFindings...)
-	} else if len(doc.OSVPackages) > 0 {
+		findings = append(findings, findingsPerSBOM[0]...)
+	} else if len(doc.Modules) > 0 {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
-			"packages", len(doc.OSVPackages))
+			"packages", len(doc.Modules))
 	}
 
 	vexDoc, err := vexgen.Build(findings, vexgen.Metadata{
@@ -102,13 +99,6 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return err
 	}
 	return writeJSON(cmd, opts.outPath, vexDoc)
-}
-
-// matchOSV matches pkgs against OSV.dev, giving up after timeout.
-func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]match.Finding, error) {
-	ctx, cancel := withTimeout(cmd.Context(), timeout)
-	defer cancel()
-	return match.RunOSV(ctx, pkgs, &osv.Client{BaseURL: baseURL})
 }
 
 // writeJSON writes value as indented JSON to path, or to stdout.

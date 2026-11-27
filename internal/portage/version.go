@@ -1,24 +1,5 @@
-// Package portage implements a comparator for Portage (Gentoo ebuild)
-// package versions and the GLSA range operators built on top of it.
-//
-// Version comparison is a direct port of Portage's own vercmp
-// (lib/portage/versions.py), including its handling of leading zeros
-// ("1.02" < "1.1"), implicit missing components ("1.0" < "1.0.0"), chained
-// "_suffix" components ("1.0_rc1_p2") and revisions. Range operators follow
-// lib/portage/glsa.py: "rge"/"rgt"/"rle"/"rlt" are revision-only
-// comparisons within the same base version, and "eq" with a trailing "*"
-// is Portage's "=*" glob match.
-//
-// If a version string can't be parsed at all, comparisons involving it
-// return an error instead of silently guessing, so callers can decide how to
-// handle it (e.g. report it as under investigation) rather than emit an
-// incorrect VEX statement.
-//
-// GLSAs state which versions are vulnerable as ranges such as "lt 1.2.3",
-// so every GLSA verdict in package match comes down to Satisfies. Plain
-// semantic versioning can't be used instead: Gentoo versions have "-rN"
-// revisions, "_p"/"_rc" suffixes and letters ("1.0a") that it orders
-// differently or rejects.
+// Package portage compares Gentoo package versions and evaluates GLSA
+// version ranges, as a direct port of Portage's own logic. See README.md.
 package portage
 
 import (

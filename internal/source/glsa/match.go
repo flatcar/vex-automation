@@ -1,4 +1,4 @@
-package match
+package glsa
 
 import (
 	"log/slog"
@@ -6,29 +6,29 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/portage"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 const slotNote = "GLSA range is restricted to a slot that can't be determined from the SBOM"
 
-// RunGLSA matches every ebuild package against every GLSA for arch, giving
-// one Finding per CVE and package the GLSA names. A GLSA without CVEs is
+// Match checks every ebuild package against every GLSA for arch, giving
+// one vuln.Finding per CVE and package the GLSA names. A GLSA without CVEs is
 // reported as "GLSA-<id>". A version that can't be evaluated is reported
 // as under investigation rather than dropped.
 //
 // This mirrors what Flatcar's build already does with Gentoo's glsa-check,
 // so the VEX document agrees with the check that gates releases.
-func RunGLSA(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
+func Match(pkgs []sbom.Package, glsas []GLSA, arch string) []vuln.Finding {
 	// GLSAs name packages as "category/name"; an image may ship several
 	// versions (slots) of one package.
 	installed := map[string][]sbom.Package{}
 	for _, pkg := range pkgs {
-		installed[pkg.CategoryName()] = append(installed[pkg.CategoryName()], pkg)
+		installed[pkg.FullName()] = append(installed[pkg.FullName()], pkg)
 	}
 
-	var findings []Finding
+	var findings []vuln.Finding
 	for _, advisory := range glsas {
 		ids := advisory.CVEs
 		if len(ids) == 0 {
@@ -40,19 +40,19 @@ func RunGLSA(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
 			}
 			for _, pkg := range installed[affected.CategoryName] {
 				status, note := evaluatePackage(affected.CategoryName, pkg.Version, affected)
-				if status == StatusUnderInvestigation {
+				if status == vuln.StatusUnderInvestigation {
 					slog.Info("cannot evaluate GLSA ranges, reporting as under investigation",
-						"package", pkg.CategoryName(), "version", pkg.Version, "glsa", advisory.ID, "reason", note)
+						"package", pkg.FullName(), "version", pkg.Version, "glsa", advisory.ID, "reason", note)
 				}
 				for _, id := range ids {
-					findings = append(findings, Finding{
-						CVE: id, Source: SourceGLSA, RefID: advisory.ID, Package: pkg, Status: status, Note: note,
+					findings = append(findings, vuln.Finding{
+						CVE: id, Source: vuln.SourceGLSA, RefID: advisory.ID, Package: pkg, Status: status, Note: note,
 					})
 				}
 			}
 		}
 	}
-	sortFindings(findings)
+	vuln.Sort(findings)
 	return findings
 }
 
@@ -67,46 +67,46 @@ func RunGLSA(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
 //
 // A range limited to a slot we can't resolve only "possibly" matches. If
 // that could change the answer, the result is under investigation.
-func evaluate(version string, affected glsa.AffectedPackage) (Status, string) {
+func evaluate(version string, affected AffectedPackage) (vuln.Status, string) {
 	matcher := newVersionMatcher(version, affected)
 
 	fixed, err := matcher.match(affected.Unaffected)
 	if err != nil {
-		return StatusUnderInvestigation, err.Error()
+		return vuln.StatusUnderInvestigation, err.Error()
 	}
 	if fixed.certain {
-		return StatusFixed, ""
+		return vuln.StatusFixed, ""
 	}
 
 	vulnerable, err := matcher.match(affected.Vulnerable)
 	if err != nil {
-		return StatusUnderInvestigation, err.Error()
+		return vuln.StatusUnderInvestigation, err.Error()
 	}
 	if vulnerable.certain && !fixed.possible {
-		return StatusAffected, ""
+		return vuln.StatusAffected, ""
 	}
 	if vulnerable.certain || vulnerable.possible {
-		return StatusUnderInvestigation, slotNote
+		return vuln.StatusUnderInvestigation, slotNote
 	}
 
 	newerThanFix, err := matcher.match(lowerBounds(affected.Unaffected))
 	if err != nil {
-		return StatusUnderInvestigation, err.Error()
+		return vuln.StatusUnderInvestigation, err.Error()
 	}
 	switch {
 	case newerThanFix.certain:
-		return StatusFixed, ""
+		return vuln.StatusFixed, ""
 	case fixed.possible || newerThanFix.possible:
-		return StatusUnderInvestigation, slotNote
+		return vuln.StatusUnderInvestigation, slotNote
 	default:
-		return StatusNotAffected, ""
+		return vuln.StatusNotAffected, ""
 	}
 }
 
 // lowerBounds turns the ranges that start at a fix ("ge", "gt" and their
 // revision-only forms) into plain "ge"/"gt" ranges, and drops the others.
-func lowerBounds(ranges []glsa.VersionRange) []glsa.VersionRange {
-	var bounds []glsa.VersionRange
+func lowerBounds(ranges []VersionRange) []VersionRange {
+	var bounds []VersionRange
 	for _, r := range ranges {
 		switch r.Op {
 		case "ge", "rge":
@@ -150,9 +150,9 @@ type versionMatcher struct {
 	branchSlots bool
 }
 
-func newVersionMatcher(version string, affected glsa.AffectedPackage) versionMatcher {
+func newVersionMatcher(version string, affected AffectedPackage) versionMatcher {
 	matcher := versionMatcher{version: version}
-	for _, ranges := range [][]glsa.VersionRange{affected.Vulnerable, affected.Unaffected} {
+	for _, ranges := range [][]VersionRange{affected.Vulnerable, affected.Unaffected} {
 		for _, r := range ranges {
 			if isBranchOf(r.Slot, version) {
 				matcher.branchSlots = true
@@ -162,7 +162,7 @@ func newVersionMatcher(version string, affected glsa.AffectedPackage) versionMat
 	return matcher
 }
 
-func (m versionMatcher) match(ranges []glsa.VersionRange) (rangeMatch, error) {
+func (m versionMatcher) match(ranges []VersionRange) (rangeMatch, error) {
 	var result rangeMatch
 	for _, r := range ranges {
 		applies := m.slotApplies(r.Slot)
