@@ -7,12 +7,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/term"
 )
 
@@ -44,8 +46,8 @@ type SyncResult struct {
 // repoURL (a local path still uses git's upload-pack), and the result
 // records exactly which upstream commit the advisories come from.
 //
-// Updating resets the checkout, discarding local changes, so dest should
-// be a dedicated mirror. A non-empty directory that is not a clone is
+// Updating resets the checkout like "git reset --hard", discarding edits
+// to tracked files, so dest should be a dedicated mirror. A non-empty directory that is not a clone is
 // left untouched.
 //
 // If progress is not nil, Sync reports each step to it, plus a download
@@ -146,11 +148,7 @@ func (s syncer) update(ctx context.Context, repo *git.Repository) error {
 	if err := pointBranchAt(repo, upstream.Hash()); err != nil {
 		return s.fail("updating the branch in "+s.dest, err)
 	}
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return s.fail("opening the checkout in "+s.dest, err)
-	}
-	if err := worktree.Reset(&git.ResetOptions{Commit: upstream.Hash(), Mode: git.HardReset}); err != nil {
+	if err := resetTrackedFiles(repo, upstream.Hash()); err != nil {
 		return s.fail("updating "+s.dest+" to upstream HEAD", err)
 	}
 	return nil
@@ -168,6 +166,10 @@ func (s syncer) summarize(repo *git.Repository, cloned bool, oldCommit string) (
 	return SyncResult{Dest: s.dest, Cloned: cloned, FileCount: len(files), OldCommit: oldCommit, NewCommit: newCommit}, nil
 }
 
+// urlCredentials matches the "user:password@" part of URLs in go-git's
+// messages, which repeat the URL as "user:REDACTED@host".
+var urlCredentials = regexp.MustCompile(`://[^/@\s"]+@`)
+
 // fail wraps err from a git step, removing any credentials in repoURL
 // from the message.
 func (s syncer) fail(action string, err error) error {
@@ -176,6 +178,7 @@ func (s syncer) fail(action string, err error) error {
 		message = strings.ReplaceAll(message, raw, safe)
 		message = strings.ReplaceAll(message, credentials(raw), "")
 	}
+	message = urlCredentials.ReplaceAllString(message, "://")
 	return fmt.Errorf("glsa sync: %s from %s: %s", action, redact(s.repoURL), message)
 }
 
@@ -202,6 +205,50 @@ func pointBranchAt(repo *git.Repository, commit plumbing.Hash) error {
 		return err
 	}
 	return repo.Storer.SetReference(plumbing.NewHashReference(head.Target(), commit))
+}
+
+// resetTrackedFiles makes the checkout match commit, like "git reset
+// --hard": tracked files are restored or removed, untracked files are kept.
+// go-git's hard reset alone would also delete untracked files, so it is
+// limited to the paths tracked before or after the reset.
+func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
+	tracked, err := trackedPaths(repo, commit)
+	if err != nil {
+		return err
+	}
+	if len(tracked) == 0 {
+		return nil // go-git reads an empty list as "every file"
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+	return worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked})
+}
+
+// trackedPaths lists the files in repo's index and in commit's tree.
+func trackedPaths(repo *git.Repository, commit plumbing.Hash) ([]string, error) {
+	var paths []string
+	idx, err := repo.Storer.Index()
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range idx.Entries {
+		paths = append(paths, entry.Name)
+	}
+	commitObject, err := repo.CommitObject(commit)
+	if err != nil {
+		return nil, err
+	}
+	files, err := commitObject.Files()
+	if err != nil {
+		return nil, err
+	}
+	err = files.ForEach(func(file *object.File) error {
+		paths = append(paths, file.Name)
+		return nil
+	})
+	return paths, err
 }
 
 // headCommit returns the commit checked out in repo, or "" if there is

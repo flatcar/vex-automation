@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +103,45 @@ func TestSyncClonesThenUpdates(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dest, "glsa-202601-02.xml")); err != nil {
 		t.Errorf("expected new file to be present after update: %v", err)
+	}
+}
+
+// TestSyncKeepsUntrackedFiles checks that an update behaves like
+// "git reset --hard": files removed upstream disappear, tracked files are
+// restored, and files git never tracked are left alone.
+func TestSyncKeepsUntrackedFiles(t *testing.T) {
+	upstream := newTestUpstream(t)
+	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	untracked := filepath.Join(dest, "notes", "local.txt")
+	if err := os.MkdirAll(filepath.Dir(untracked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(untracked, []byte("mine"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "glsa-202601-01.xml"), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(upstream, "glsa-202601-02.xml")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "remove glsa-202601-02.xml")
+
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if got, err := os.ReadFile(untracked); err != nil || string(got) != "mine" {
+		t.Errorf("untracked file = %q, %v; want it kept", got, err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dest, "glsa-202601-01.xml")); string(got) != "<glsa/>" {
+		t.Errorf("tracked file = %q, want it restored", got)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "glsa-202601-02.xml")); !os.IsNotExist(err) {
+		t.Errorf("file removed upstream still present (err = %v)", err)
 	}
 }
 
@@ -367,6 +408,27 @@ func TestSyncRedactsCredentialsInMessages(t *testing.T) {
 	for _, out := range []string{progress.String(), err.Error()} {
 		if strings.Contains(out, "s3cret") || strings.Contains(out, "user@") {
 			t.Errorf("credentials leaked: %q", out)
+		}
+	}
+}
+
+// TestSyncRedactsCredentialsInHTTPErrors covers go-git's own error text,
+// which repeats the URL as "user:REDACTED@host": the user name can be a
+// token too.
+func TestSyncRedactsCredentialsInHTTPErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "broken", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	repoURL := strings.Replace(srv.URL, "://", "://ghp_tok%21en:x-oauth-basic@", 1) + "/glsa.git"
+
+	_, err := Sync(context.Background(), filepath.Join(t.TempDir(), "g"), repoURL, nil)
+	if err == nil {
+		t.Fatal("expected an error from a failing server")
+	}
+	for _, secret := range []string{"ghp_tok", "x-oauth-basic", "REDACTED@"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error contains %q: %v", secret, err)
 		}
 	}
 }
