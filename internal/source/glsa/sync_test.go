@@ -257,7 +257,8 @@ func TestSyncRecoversFromFailedReset(t *testing.T) {
 	upstream := newTestUpstream(t)
 	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
-	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+	cloned, err := Sync(context.Background(), dest, upstream, nil)
+	if err != nil {
 		t.Fatalf("Sync (clone): %v", err)
 	}
 	if err := os.Remove(filepath.Join(upstream, "glsa-202601-02.xml")); err != nil {
@@ -269,7 +270,7 @@ func TestSyncRecoversFromFailedReset(t *testing.T) {
 	if err := os.Chmod(dest, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Sync(context.Background(), dest, upstream, nil)
+	_, err = Sync(context.Background(), dest, upstream, nil)
 	if chmodErr := os.Chmod(dest, 0o755); chmodErr != nil {
 		t.Fatal(chmodErr)
 	}
@@ -283,6 +284,9 @@ func TestSyncRecoversFromFailedReset(t *testing.T) {
 	}
 	if res.FileCount != 1 {
 		t.Errorf("FileCount = %d after retry, want 1 (withdrawn GLSA must be removed)", res.FileCount)
+	}
+	if res.OldCommit != cloned.NewCommit || res.NewCommit == res.OldCommit {
+		t.Errorf("retry went from %s to %s, want from the cloned commit %s to a new one", res.OldCommit, res.NewCommit, cloned.NewCommit)
 	}
 }
 
@@ -444,13 +448,14 @@ func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
 		t.Fatalf("initial Sync (clone): %v", err)
 	}
 
-	// Corrupt the checkout's HEAD so a subsequent fetch/reset fails.
+	// Corrupt the checkout's HEAD so opening the checkout fails.
 	if err := os.WriteFile(filepath.Join(dest, ".git", "HEAD"), []byte("garbage, not a ref\n"), 0o600); err != nil {
 		t.Fatalf("corrupting HEAD: %v", err)
 	}
 
-	if _, err := Sync(context.Background(), dest, upstream, nil); err == nil {
-		t.Fatal("expected an error updating a corrupted checkout, got nil")
+	_, err := Sync(context.Background(), dest, upstream, nil)
+	if err == nil || !strings.Contains(err.Error(), dest) {
+		t.Fatalf("Sync error = %v, want an error naming %s", err, dest)
 	}
 }
 
@@ -529,22 +534,6 @@ func TestSyncUpdatesCheckoutWithUnbornHead(t *testing.T) {
 	}
 	if res.Cloned || res.OldCommit != "" || res.NewCommit == "" || res.FileCount != 1 {
 		t.Errorf("Result = %+v, want an update from no commit to one commit with 1 file", res)
-	}
-}
-
-func TestSyncReportsErrorForCorruptedCheckout(t *testing.T) {
-	upstream := newTestUpstream(t)
-	dest := filepath.Join(t.TempDir(), "glsa-mirror")
-	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
-		t.Fatalf("Sync (clone): %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, ".git", "HEAD"), []byte("garbage\n"), 0o600); err != nil {
-		t.Fatalf("corrupting HEAD: %v", err)
-	}
-
-	_, err := Sync(context.Background(), dest, upstream, nil)
-	if err == nil || !strings.Contains(err.Error(), dest) {
-		t.Fatalf("Sync error = %v, want an error naming %s", err, dest)
 	}
 }
 

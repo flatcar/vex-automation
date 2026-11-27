@@ -149,11 +149,13 @@ func (s syncer) update(ctx context.Context, repo *git.Repository) error {
 	if err != nil {
 		return s.fail("finding the fetched commit in "+s.dest, err)
 	}
-	if err := pointBranchAt(repo, upstream.Hash()); err != nil {
+	restoreBranch, err := pointBranchAt(repo, upstream.Hash())
+	if err != nil {
 		return s.fail("updating the branch in "+s.dest, err)
 	}
 	if err := resetTrackedFiles(repo, upstream.Hash()); err != nil {
-		return s.fail("updating "+s.dest+" to upstream HEAD", err)
+		// Keep HEAD naming the commit whose files are still on disk.
+		return s.fail("updating "+s.dest+" to upstream HEAD", errors.Join(err, restoreBranch()))
 	}
 	return nil
 }
@@ -202,18 +204,23 @@ func (s syncer) terminal() io.Writer {
 }
 
 // pointBranchAt moves the checked-out branch, or a detached HEAD, to
-// commit. A hard reset does this too, but not for a branch with no commit
-// yet (an interrupted clone), and it may be skipped (resetTrackedFiles).
-func pointBranchAt(repo *git.Repository, commit plumbing.Hash) error {
+// commit, and returns a function that moves it back. A hard reset moves
+// it too, but not for a branch with no commit yet (an interrupted clone),
+// and it may be skipped (resetTrackedFiles).
+func pointBranchAt(repo *git.Repository, commit plumbing.Hash) (restore func() error, err error) {
 	head, err := repo.Storer.Reference(plumbing.HEAD)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	name := plumbing.HEAD
 	if head.Type() == plumbing.SymbolicReference {
 		name = head.Target()
 	}
-	return repo.Storer.SetReference(plumbing.NewHashReference(name, commit))
+	restore = func() error { return repo.Storer.RemoveReference(name) }
+	if previous, err := repo.Storer.Reference(name); err == nil {
+		restore = func() error { return repo.Storer.SetReference(previous) }
+	}
+	return restore, repo.Storer.SetReference(plumbing.NewHashReference(name, commit))
 }
 
 // resetTrackedFiles makes the checkout match commit, like "git reset
