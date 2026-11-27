@@ -104,7 +104,7 @@ AI-based judgment call.
 ## 4. Proposed design
 
 Mirror the existing `internal/glsa` → `internal/match` shape: each new source gets its own
-package that parses upstream data into `match.Finding`-compatible records, so `match.Run` and
+package that parses upstream data into `match.Finding`-compatible records, so `match.RunGLSA` and
 `vexgen.Build` don't need to change.
 
 ```mermaid
@@ -188,7 +188,7 @@ with overlapping scope are added:
 
 ```mermaid
 sequenceDiagram
-    participant M as match.Run
+    participant M as match.RunGLSA
     participant D as Dedup (new)
     participant V as vexgen.Build
 

@@ -3,15 +3,21 @@ package match
 import (
 	"fmt"
 	"regexp"
+	"slices"
 
 	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/portage"
 )
 
+// This file holds per-package exceptions to GLSA matching. RunGLSA calls
+// evaluatePackage for every package; for most it simply calls evaluate,
+// but a package listed in versionSchemes first has its versions rewritten
+// so that Flatcar's and Gentoo's versions can be compared at all.
+
 // versionTranslator rewrites an installed version and a GLSA package entry
 // into versions that can be compared with each other, or explains why they
 // can't be.
-type versionTranslator func(installed string, ap glsa.AffectedPackage) (string, glsa.AffectedPackage, error)
+type versionTranslator func(installed string, affected glsa.AffectedPackage) (string, glsa.AffectedPackage, error)
 
 // versionSchemes lists packages, by category/name, whose Flatcar versions
 // follow a different scheme than the Gentoo versions in GLSAs, so comparing
@@ -23,16 +29,16 @@ var versionSchemes = map[string]versionTranslator{
 // evaluatePackage is evaluate with the package's version scheme exception,
 // if any, applied first. A range that can't be translated makes the result
 // StatusUnderInvestigation, never a guessed status.
-func evaluatePackage(categoryName, installedVersion string, ap glsa.AffectedPackage) (Status, string) {
+func evaluatePackage(categoryName, installedVersion string, affected glsa.AffectedPackage) (Status, string) {
 	translate, ok := versionSchemes[categoryName]
 	if !ok {
-		return evaluate(installedVersion, ap)
+		return evaluate(installedVersion, affected)
 	}
-	v, tap, err := translate(installedVersion, ap)
+	translatedVersion, translatedAffected, err := translate(installedVersion, affected)
 	if err != nil {
 		return StatusUnderInvestigation, fmt.Sprintf("%s: %v", categoryName, err)
 	}
-	return evaluate(v, tap)
+	return evaluate(translatedVersion, translatedAffected)
 }
 
 var (
@@ -76,79 +82,106 @@ const (
 // holds for GLSA 202610-01 (20260816.3.125 followed 20260601.3.112.5). A
 // date-only bump within one NSS release would also produce such a pair and
 // can't be told apart from the GLSA alone.
-func translateCACertificates(installed string, ap glsa.AffectedPackage) (string, glsa.AffectedPackage, error) {
+func translateCACertificates(installed string, affected glsa.AffectedPackage) (string, glsa.AffectedPackage, error) {
 	nss := revisionSuffix.ReplaceAllString(installed, "")
 	if gentooCACertsNSS.MatchString(nss) || gentooCACertsDate.MatchString(nss) {
-		// Already Gentoo's scheme, compare as usual.
-		return installed, ap, nil
+		return installed, affected, nil // already Gentoo's scheme
 	}
 	if _, err := portage.Compare(nss, caCertsMinNSS); err != nil {
-		return "", ap, fmt.Errorf("installed version %q is not an NSS version: %w", installed, err)
+		return "", affected, fmt.Errorf("installed version %q is not an NSS version: %w", installed, err)
 	}
 
-	translate := func(ranges []glsa.VersionRange) ([]glsa.VersionRange, error) {
-		out := make([]glsa.VersionRange, len(ranges))
-		for i, r := range ranges {
-			switch r.Op {
-			case "lt", "le", "eq", "ge", "gt":
-			default:
-				return nil, fmt.Errorf("can't compare NSS version %s with GLSA range %s %s", installed, r.Op, r.Version)
-			}
-			v := revisionSuffix.ReplaceAllString(r.Version, "")
-			switch m := gentooCACertsNSS.FindStringSubmatch(v); {
-			case m != nil:
-				v = m[2]
-			case gentooCACertsDate.MatchString(v) && v < caCertsDateOnlyCutoff:
-				if ok, err := portage.Satisfies(nss, "ge", caCertsMinNSS); err != nil || !ok {
-					return nil, fmt.Errorf("can't order NSS version %s against bundle date %s", installed, r.Version)
-				}
-				v = "0"
-			default:
-				return nil, fmt.Errorf("GLSA version %q has no NSS version to compare with %s", r.Version, installed)
-			}
-			out[i] = glsa.VersionRange{Op: r.Op, Version: v, Slot: r.Slot}
-		}
-		return out, nil
-	}
-
-	vulnerable, err := translate(ap.Vulnerable)
+	vulnerable, err := toNSSRanges(installed, nss, affected.Vulnerable)
 	if err != nil {
-		return "", ap, err
+		return "", affected, err
 	}
-	unaffected, err := translate(ap.Unaffected)
+	unaffected, err := toNSSRanges(installed, nss, affected.Unaffected)
 	if err != nil {
-		return "", ap, err
+		return "", affected, err
 	}
-	if err := checkCACertsBoundary(installed, nss, ap.Vulnerable, vulnerable, ap.Unaffected, unaffected); err != nil {
-		return "", ap, err
+	if err := checkCACertsBoundary(installed, nss, affected); err != nil {
+		return "", affected, err
 	}
-	ap.Vulnerable, ap.Unaffected = vulnerable, unaffected
-	return nss, ap, nil
+	affected.Vulnerable, affected.Unaffected = vulnerable, unaffected
+	return nss, affected, nil
 }
 
-// checkCACertsBoundary rejects translations where a range boundary equals
-// the installed NSS version, unless it is the decidable "lt X" / "ge X"
-// pair with the same unrevised X (see translateCACertificates).
-func checkCACertsBoundary(installed, nss string, origVuln, vuln, origUnaff, unaff []glsa.VersionRange) error {
-	var ops []string
-	var origs []string
-	collect := func(orig, tr []glsa.VersionRange, kind string) {
-		for i, r := range tr {
-			if c, err := portage.Compare(r.Version, nss); err == nil && c == 0 {
-				ops = append(ops, kind+" "+r.Op)
-				origs = append(origs, orig[i].Version)
+// toNSSRanges rewrites Gentoo ca-certificates ranges into NSS versions.
+func toNSSRanges(installed, nss string, ranges []glsa.VersionRange) ([]glsa.VersionRange, error) {
+	translated := make([]glsa.VersionRange, len(ranges))
+	for i, r := range ranges {
+		if !slices.Contains([]string{"lt", "le", "eq", "ge", "gt"}, r.Op) {
+			return nil, fmt.Errorf("can't compare NSS version %s with GLSA range %s %s", installed, r.Op, r.Version)
+		}
+		version, err := toNSSVersion(installed, nss, r.Version)
+		if err != nil {
+			return nil, err
+		}
+		translated[i] = glsa.VersionRange{Op: r.Op, Version: version, Slot: r.Slot}
+	}
+	return translated, nil
+}
+
+// toNSSVersion turns a Gentoo version into the NSS version it bundles. An
+// old date-only version becomes "0", older than any supported NSS version.
+func toNSSVersion(installed, nss, gentooVersion string) (string, error) {
+	if nssVersion, ok := bundledNSS(gentooVersion); ok {
+		return nssVersion, nil
+	}
+	version := revisionSuffix.ReplaceAllString(gentooVersion, "")
+	if !gentooCACertsDate.MatchString(version) || version >= caCertsDateOnlyCutoff {
+		return "", fmt.Errorf("GLSA version %q has no NSS version to compare with %s", gentooVersion, installed)
+	}
+	if ok, err := portage.Satisfies(nss, "ge", caCertsMinNSS); err != nil || !ok {
+		return "", fmt.Errorf("can't order NSS version %s against bundle date %s", installed, gentooVersion)
+	}
+	return "0", nil
+}
+
+// checkCACertsBoundary rejects ranges whose boundary has the installed NSS
+// version, unless they are the decidable pair of a vulnerable "lt X" and
+// an unaffected "ge X" with the same unrevised X (see
+// translateCACertificates).
+func checkCACertsBoundary(installed, nss string, affected glsa.AffectedPackage) error {
+	var conditions, versions []string
+	addBoundaries := func(kind string, ranges []glsa.VersionRange) {
+		for _, r := range ranges {
+			if hasNSSVersion(r.Version, nss) {
+				conditions = append(conditions, kind+" "+r.Op)
+				versions = append(versions, r.Version)
 			}
 		}
 	}
-	collect(origVuln, vuln, "vulnerable")
-	collect(origUnaff, unaff, "unaffected")
-	if len(ops) == 0 {
+	addBoundaries("vulnerable", affected.Vulnerable)
+	addBoundaries("unaffected", affected.Unaffected)
+	if len(conditions) == 0 {
 		return nil
 	}
-	pair := len(ops) == 2 && ops[0] == "vulnerable lt" && ops[1] == "unaffected ge" &&
-		origs[0] == origs[1] && !revisionSuffix.MatchString(origs[0])
-	if !pair {
-		return fmt.Errorf("GLSA ranges %v at NSS version %s differ only in bundle date or revision, can't tell which side %s is on", origs, nss, installed)
+	isDecidablePair := slices.Equal(conditions, []string{"vulnerable lt", "unaffected ge"}) &&
+		versions[0] == versions[1] && !revisionSuffix.MatchString(versions[0])
+	if !isDecidablePair {
+		return fmt.Errorf("GLSA ranges %v at NSS version %s differ only in bundle date or revision, can't tell which side %s is on", versions, nss, installed)
 	}
 	return nil
+}
+
+// hasNSSVersion reports whether a Gentoo "<date>.<NSS version>" version
+// bundles NSS version nss.
+func hasNSSVersion(gentooVersion, nss string) bool {
+	bundled, ok := bundledNSS(gentooVersion)
+	if !ok {
+		return false
+	}
+	order, err := portage.Compare(bundled, nss)
+	return err == nil && order == 0
+}
+
+// bundledNSS returns the NSS part of a Gentoo "<date>.<NSS version>"
+// version, e.g. "3.125" for "20260816.3.125-r1".
+func bundledNSS(gentooVersion string) (string, bool) {
+	groups := gentooCACertsNSS.FindStringSubmatch(revisionSuffix.ReplaceAllString(gentooVersion, ""))
+	if groups == nil {
+		return "", false
+	}
+	return groups[2], true
 }

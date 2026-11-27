@@ -2,11 +2,18 @@
 // and a newer Flatcar release) matched against the same vulnerability data,
 // and classifies each (vulnerability, package) pair as fixed, removed,
 // introduced, still affected or needing review. It is pure logic: loading
-// SBOMs and running the matchers is up to the caller.
+// SBOMs and running the matchers is up to the caller (cli.runDiff).
+//
+// Its main use is drafting the "Security fixes" section of the release
+// notes (FormatChangelog), so it errs towards "review" whenever a side
+// couldn't be fully checked: a wrong "fixed" line would be published as a
+// claim about the release.
 package diff
 
 import (
-	"sort"
+	"cmp"
+	"maps"
+	"slices"
 
 	"github.com/flatcar/vex-automation/internal/match"
 	"github.com/flatcar/vex-automation/internal/sbom"
@@ -61,13 +68,7 @@ const (
 )
 
 // bucketOrder is the order in which entries are listed.
-var bucketOrder = map[Bucket]int{
-	BucketFixed:         0,
-	BucketRemoved:       1,
-	BucketIntroduced:    2,
-	BucketStillAffected: 3,
-	BucketReview:        4,
-}
+var bucketOrder = []Bucket{BucketFixed, BucketRemoved, BucketIntroduced, BucketStillAffected, BucketReview}
 
 // Side is one release: its SBOM and the findings matched against it.
 type Side struct {
@@ -154,92 +155,111 @@ type Skipped struct {
 	Module    string `json:"module,omitempty"`
 }
 
+// key identifies one entry: a vulnerability in a package.
 type key struct {
-	id      string
-	catName string
+	id          string
+	packageName string // sbom.Package.CategoryName()
 }
 
-// presence records, per package CategoryName, which versions a side ships
-// and whether some copy of it could not be checked.
+// presence is what one release ships of one package.
 type presence struct {
 	ecosystem string
-	pkg       string
+	name      string
 	versions  map[string]bool
+	// unchecked is set if some copy has a version that couldn't be checked.
 	unchecked bool
 }
 
-// Compute compares in.Old with in.New. The result is deterministic: it
-// doesn't depend on the order of packages or findings.
-func Compute(in Input) Result {
-	oldPresent, newPresent := presenceOf(in.Old.Doc), presenceOf(in.New.Doc)
-	oldByKey, newByKey := groupFindings(in.Old.Findings), groupFindings(in.New.Findings)
+// comparedSide is one release, prepared for comparison.
+type comparedSide struct {
+	packages map[string]*presence // by sbom.Package.CategoryName()
+	findings map[key][]match.Finding
+}
 
+func prepare(s Side) comparedSide {
+	return comparedSide{packages: packagesOf(s.Doc), findings: groupFindings(s.Findings)}
+}
+
+// Compute compares in.Old with in.New. The result doesn't depend on the
+// order of packages or findings.
+//
+// It works on (vulnerability, package) keys rather than on whole
+// vulnerabilities, because the release notes credit a fix to a package.
+// For every key that has a finding on either side, it reduces each side
+// to one State (stateOf) and turns the pair of states into a Bucket
+// (classify).
+func Compute(in Input) Result {
+	oldSide, newSide := prepare(in.Old), prepare(in.New)
 	keys := map[key]bool{}
-	for k := range oldByKey {
+	for k := range oldSide.findings {
 		keys[k] = true
 	}
-	for k := range newByKey {
+	for k := range newSide.findings {
 		keys[k] = true
 	}
 
 	entries := []Entry{}
 	var summary Summary
 	for k := range keys {
-		oldState := stateOf(oldPresent, oldByKey, k)
-		newState := stateOf(newPresent, newByKey, k)
-		bucket, ok := classify(oldState, newState)
-		if !ok {
-			continue
+		entry, ok := compareKey(k, oldSide, newSide)
+		if ok {
+			entries = append(entries, entry)
+			summary.add(entry.Bucket)
 		}
-
-		// classify only reports keys present on at least one side.
-		p := oldPresent[k.catName]
-		if p == nil {
-			p = newPresent[k.catName]
-		}
-
-		all := append(append([]match.Finding{}, oldByKey[k]...), newByKey[k]...)
-		entries = append(entries, Entry{
-			ID:         k.id,
-			Bucket:     bucket,
-			Package:    p.pkg,
-			Ecosystem:  p.ecosystem,
-			Old:        SideInfo{State: oldState, Versions: versionsOf(oldPresent[k.catName])},
-			New:        SideInfo{State: newState, Versions: versionsOf(newPresent[k.catName])},
-			Sources:    collect(all, func(f match.Finding) string { return f.Source }),
-			Advisories: collect(all, func(f match.Finding) string { return f.RefID }),
-			Notes:      collect(all, func(f match.Finding) string { return f.Note }),
-		})
-		summary.add(bucket)
 	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		a, b := entries[i], entries[j]
-		if a.Bucket != b.Bucket {
-			return bucketOrder[a.Bucket] < bucketOrder[b.Bucket]
-		}
-		if a.Package != b.Package {
-			return a.Package < b.Package
-		}
-		if a.Ecosystem != b.Ecosystem {
-			return a.Ecosystem < b.Ecosystem
-		}
-		return a.ID < b.ID
+	slices.SortFunc(entries, func(a, b Entry) int {
+		return cmp.Or(
+			cmp.Compare(slices.Index(bucketOrder, a.Bucket), slices.Index(bucketOrder, b.Bucket)),
+			cmp.Compare(a.Package, b.Package),
+			cmp.Compare(a.Ecosystem, b.Ecosystem),
+			cmp.Compare(a.ID, b.ID),
+		)
 	})
 
 	return Result{
 		SchemaVersion: SchemaVersion,
 		Summary:       summary,
 		Entries:       entries,
-		NotChecked: NotChecked{
-			Old: skippedOf(in.Old.Doc.Skipped),
-			New: skippedOf(in.New.Doc.Skipped),
-		},
+		NotChecked:    NotChecked{Old: skippedOf(in.Old.Doc.Skipped), New: skippedOf(in.New.Doc.Skipped)},
 	}
 }
 
-// classify applies the bucket rules in order. ok is false for keys that
-// are not worth reporting (e.g. fixed on both sides).
+// compareKey builds the entry for k. ok is false if k is not worth
+// reporting, e.g. because it is fixed on both sides.
+func compareKey(k key, oldSide, newSide comparedSide) (Entry, bool) {
+	oldState, newState := oldSide.stateOf(k), newSide.stateOf(k)
+	bucket, ok := classify(oldState, newState)
+	if !ok {
+		return Entry{}, false
+	}
+
+	// classify only reports packages present on at least one side.
+	pkg := oldSide.packages[k.packageName]
+	if pkg == nil {
+		pkg = newSide.packages[k.packageName]
+	}
+
+	var sources, advisories, notes []string
+	for _, finding := range append(slices.Clone(oldSide.findings[k]), newSide.findings[k]...) {
+		sources = append(sources, finding.Source)
+		advisories = append(advisories, finding.RefID)
+		notes = append(notes, finding.Note)
+	}
+	return Entry{
+		ID:         k.id,
+		Bucket:     bucket,
+		Package:    pkg.name,
+		Ecosystem:  pkg.ecosystem,
+		Old:        SideInfo{State: oldState, Versions: versionsOf(oldSide.packages[k.packageName])},
+		New:        SideInfo{State: newState, Versions: versionsOf(newSide.packages[k.packageName])},
+		Sources:    sortedNonEmpty(sources),
+		Advisories: sortedNonEmpty(advisories),
+		Notes:      sortedNonEmpty(notes),
+	}, true
+}
+
+// classify applies the bucket rules in order. ok is false for changes not
+// worth reporting.
 func classify(oldState, newState State) (Bucket, bool) {
 	switch {
 	case oldState == StateAffected && (newState == StateFixed || newState == StateNotAffected || newState == StateClean):
@@ -248,7 +268,7 @@ func classify(oldState, newState State) (Bucket, bool) {
 		return BucketRemoved, true
 	case oldState == StateAffected && newState == StateAffected:
 		return BucketStillAffected, true
-	case unknown(oldState) || unknown(newState):
+	case isUnknown(oldState) || isUnknown(newState):
 		// Checked before "introduced": an old state that couldn't be
 		// evaluated doesn't show the vulnerability is new.
 		return BucketReview, true
@@ -258,7 +278,7 @@ func classify(oldState, newState State) (Bucket, bool) {
 	return "", false
 }
 
-func unknown(s State) bool {
+func isUnknown(s State) bool {
 	return s == StateUnderInvestigation || s == StateUnchecked
 }
 
@@ -277,119 +297,113 @@ func (s *Summary) add(b Bucket) {
 	}
 }
 
-func presenceOf(doc sbom.Document) map[string]*presence {
-	m := map[string]*presence{}
-	get := func(p sbom.Package) *presence {
-		pr := m[p.CategoryName()]
-		if pr == nil {
-			pr = &presence{ecosystem: ecosystemOf(p), pkg: displayPackage(p), versions: map[string]bool{}}
-			m[p.CategoryName()] = pr
-		}
-		pr.versions[p.Version] = true
-		return pr
-	}
-	for _, p := range append(append([]sbom.Package{}, doc.Packages...), doc.OSVPackages...) {
-		get(p)
-	}
-	for _, sk := range doc.Skipped {
-		if sk.Module != "" {
-			get(sbom.Package{Category: sk.Ecosystem, Name: sk.Module, Version: sk.Version}).unchecked = true
-		}
-	}
-	return m
-}
-
-// ecosystemOf returns "ebuild" for Portage packages and the purl type for
-// golang/cargo packages (which sbom.Load stores in Category).
-func ecosystemOf(p sbom.Package) string {
-	if p.Category == "golang" || p.Category == "cargo" {
-		return p.Category
-	}
-	return "ebuild"
-}
-
-func displayPackage(p sbom.Package) string {
-	if ecosystemOf(p) == "ebuild" {
-		return p.CategoryName()
-	}
-	return p.Name
-}
-
-func groupFindings(findings []match.Finding) map[key][]match.Finding {
-	m := map[key][]match.Finding{}
-	for _, f := range findings {
-		k := key{id: f.CVE, catName: f.Package.CategoryName()}
-		m[k] = append(m[k], f)
-	}
-	return m
-}
-
-// stateOf returns the most severe state of k on one side. A copy that
-// couldn't be checked makes the side unchecked unless a finding already
-// shows it affected.
-func stateOf(present map[string]*presence, byKey map[key][]match.Finding, k key) State {
-	p := present[k.catName]
-	if p == nil {
+// stateOf returns the state of k on this side: the most severe status of
+// its findings. A copy that couldn't be checked makes it unchecked, unless
+// a finding already shows it affected.
+func (s comparedSide) stateOf(k key) State {
+	pkg := s.packages[k.packageName]
+	if pkg == nil {
 		return StateAbsent
 	}
-	findings := byKey[k]
+	findings := s.findings[k]
 	if len(findings) == 0 {
-		if p.unchecked {
+		if pkg.unchecked {
 			return StateUnchecked
 		}
 		return StateClean
 	}
-	worst := findings[0].Status
-	for _, f := range findings[1:] {
-		if match.Severity(f.Status) < match.Severity(worst) {
-			worst = f.Status
-		}
-	}
-	if worst != match.StatusAffected && p.unchecked {
+	worst := slices.MinFunc(findings, func(a, b match.Finding) int {
+		return match.Severity(a.Status) - match.Severity(b.Status)
+	}).Status
+	if worst != match.StatusAffected && pkg.unchecked {
 		return StateUnchecked
 	}
 	return State(worst)
 }
 
-func versionsOf(p *presence) []string {
-	out := []string{}
-	if p == nil {
-		return out
+// packagesOf lists what doc ships, including copies that couldn't be checked.
+func packagesOf(doc sbom.Document) map[string]*presence {
+	packages := map[string]*presence{}
+	for _, pkg := range slices.Concat(doc.Packages, doc.OSVPackages) {
+		addPresence(packages, pkg)
 	}
-	for v := range p.versions {
-		out = append(out, v)
+	for _, skipped := range doc.Skipped {
+		if skipped.Module != "" {
+			pkg := sbom.Package{Category: skipped.Ecosystem, Name: skipped.Module, Version: skipped.Version}
+			addPresence(packages, pkg).unchecked = true
+		}
 	}
-	sort.Strings(out)
-	return out
+	return packages
 }
 
-// collect returns the sorted, deduplicated, non-empty values of field.
-func collect(findings []match.Finding, field func(match.Finding) string) []string {
-	seen := map[string]bool{}
-	out := []string{}
-	for _, f := range findings {
-		if v := field(f); v != "" && !seen[v] {
-			seen[v] = true
-			out = append(out, v)
-		}
+func addPresence(packages map[string]*presence, pkg sbom.Package) *presence {
+	entry := packages[pkg.CategoryName()]
+	if entry == nil {
+		entry = &presence{ecosystem: ecosystemOf(pkg), name: displayName(pkg), versions: map[string]bool{}}
+		packages[pkg.CategoryName()] = entry
 	}
-	sort.Strings(out)
-	return out
+	entry.versions[pkg.Version] = true
+	return entry
 }
 
-func skippedOf(in []sbom.SkippedPackage) []Skipped {
-	out := make([]Skipped, 0, len(in))
-	for _, s := range in {
-		out = append(out, Skipped{Name: s.Name, Version: s.Version, PURL: s.PURL, Reason: s.Reason, Ecosystem: s.Ecosystem, Module: s.Module})
+// ecosystemOf returns "golang" or "cargo" for OSV packages (sbom stores
+// these in Category), and "ebuild" for all others.
+func ecosystemOf(pkg sbom.Package) string {
+	if pkg.Category == "golang" || pkg.Category == "cargo" {
+		return pkg.Category
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Name != out[j].Name {
-			return out[i].Name < out[j].Name
+	return "ebuild"
+}
+
+// displayName is "category/name" for ebuilds and the module path otherwise.
+func displayName(pkg sbom.Package) string {
+	if ecosystemOf(pkg) == "ebuild" {
+		return pkg.CategoryName()
+	}
+	return pkg.Name
+}
+
+func groupFindings(findings []match.Finding) map[key][]match.Finding {
+	grouped := map[key][]match.Finding{}
+	for _, finding := range findings {
+		k := key{id: finding.CVE, packageName: finding.Package.CategoryName()}
+		grouped[k] = append(grouped[k], finding)
+	}
+	return grouped
+}
+
+// versionsOf returns the sorted versions shipped, or an empty list (which
+// encodes as [] rather than null in JSON).
+func versionsOf(pkg *presence) []string {
+	if pkg == nil {
+		return []string{}
+	}
+	return slices.Sorted(maps.Keys(pkg.versions))
+}
+
+// sortedNonEmpty returns the distinct non-empty values, sorted. The result
+// is never nil, so that it encodes as [] in JSON.
+func sortedNonEmpty(values []string) []string {
+	result := []string{}
+	for _, value := range values {
+		if value != "" {
+			result = append(result, value)
 		}
-		if out[i].Version != out[j].Version {
-			return out[i].Version < out[j].Version
+	}
+	slices.Sort(result)
+	return slices.Compact(result)
+}
+
+func skippedOf(packages []sbom.SkippedPackage) []Skipped {
+	skipped := make([]Skipped, len(packages))
+	for i, pkg := range packages {
+		skipped[i] = Skipped{
+			Name: pkg.Name, Version: pkg.Version, PURL: pkg.PURL, Reason: pkg.Reason,
+			Ecosystem: pkg.Ecosystem, Module: pkg.Module,
 		}
-		return out[i].PURL < out[j].PURL
+	}
+	slices.SortFunc(skipped, func(a, b Skipped) int {
+		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Version, b.Version), cmp.Compare(a.PURL, b.PURL))
 	})
-	return out
+	return skipped
 }

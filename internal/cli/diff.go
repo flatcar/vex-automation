@@ -2,11 +2,9 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,25 +15,14 @@ import (
 )
 
 type diffOptions struct {
-	oldSBOM    string
-	newSBOM    string
-	glsaDir    string
-	outPath    string
-	arch       string
-	format     string
-	osvEnabled bool
-	osvBaseURL string
-	osvTimeout time.Duration
-
-	allowGLSAErrors bool
+	sharedOptions
+	oldSBOM string
+	newSBOM string
+	format  string
 }
 
-// newDiffCmd builds the "diff" subcommand, which reports the
-// vulnerabilities a release fixed (or introduced) compared to the previous
-// one.
 func newDiffCmd() *cobra.Command {
 	var opts diffOptions
-
 	cmd := &cobra.Command{
 		Use:   "diff",
 		Short: "Compare the vulnerabilities of two releases' SBOMs",
@@ -59,33 +46,24 @@ contains.`,
 			return runDiff(cmd, opts)
 		},
 	}
-
+	opts.addFlags(cmd)
 	cmd.Flags().StringVar(&opts.oldSBOM, "old-sbom", "", "path to the SPDX SBOM JSON file of the previous release (required)")
 	cmd.Flags().StringVar(&opts.newSBOM, "new-sbom", "", "path to the SPDX SBOM JSON file of the new release (required)")
-	cmd.Flags().StringVar(&opts.glsaDir, "glsa-dir", "", "path to a local directory containing GLSA *.xml files (required)")
-	cmd.Flags().StringVarP(&opts.outPath, "output", "o", "", "output file path (default: stdout)")
-	cmd.Flags().StringVar(&opts.arch, "arch", "amd64", "architecture to match GLSA entries against")
 	cmd.Flags().StringVar(&opts.format, "format", "json", "output format: json or changelog")
-	cmd.Flags().BoolVar(&opts.osvEnabled, "osv", true, "match golang/cargo SBOM packages against OSV.dev (requires network access; --osv=false leaves them unchecked)")
-	cmd.Flags().StringVar(&opts.osvBaseURL, "osv-base-url", osv.DefaultBaseURL, "OSV.dev API base URL (override for testing or a private mirror)")
-	cmd.Flags().DurationVar(&opts.osvTimeout, "osv-timeout", defaultOSVTimeout, "maximum time to allow OSV.dev matching to run")
-	cmd.Flags().BoolVar(&opts.allowGLSAErrors, "allow-glsa-errors", false, "continue with the remaining advisories when some GLSA files fail to parse, instead of failing")
-
 	_ = cmd.MarkFlagRequired("old-sbom")
 	_ = cmd.MarkFlagRequired("new-sbom")
-	_ = cmd.MarkFlagRequired("glsa-dir")
-
 	return cmd
 }
 
+// runDiff matches two SBOMs against the same data and reports how each
+// (vulnerability, package) pair changed between them (see the package
+// documentation for the steps).
 func runDiff(cmd *cobra.Command, opts diffOptions) error {
 	if opts.format != "json" && opts.format != "changelog" {
 		return fmt.Errorf("--format must be json or changelog, got %q", opts.format)
 	}
-	if opts.osvEnabled {
-		if err := validateOSVFlags(opts.osvBaseURL, opts.osvTimeout); err != nil {
-			return err
-		}
+	if err := opts.validate(); err != nil {
+		return err
 	}
 
 	oldDoc, err := sbom.Load(opts.oldSBOM)
@@ -99,96 +77,94 @@ func runDiff(cmd *cobra.Command, opts diffOptions) error {
 	logSkipped(oldDoc.Skipped)
 	logSkipped(newDoc.Skipped)
 
-	glsas, skippedGLSAs, err := loadGLSAs(opts.glsaDir, opts.allowGLSAErrors)
+	glsas, skippedGLSAs, err := opts.loadGLSAs()
 	if err != nil {
 		return err
 	}
-
 	in := diff.Input{
-		Old: diff.Side{Doc: oldDoc, Findings: match.Run(oldDoc.Packages, glsas, opts.arch)},
-		New: diff.Side{Doc: newDoc, Findings: match.Run(newDoc.Packages, glsas, opts.arch)},
+		Old: diff.Side{Doc: oldDoc, Findings: match.RunGLSA(oldDoc.Packages, glsas, opts.arch)},
+		New: diff.Side{Doc: newDoc, Findings: match.RunGLSA(newDoc.Packages, glsas, opts.arch)},
 	}
-
 	if opts.osvEnabled {
-		// One deadline for all OSV.dev work, so --osv-timeout bounds the
-		// whole run rather than each stage.
-		ctx, cancel := withOSVTimeout(cmd.Context(), opts.osvTimeout)
-		defer cancel()
-		client := &osv.Client{BaseURL: opts.osvBaseURL}
-		if err := applyCurlAdvisories(ctx, client, &in); err != nil {
-			return fmt.Errorf("fetching curl advisories from OSV.dev: %w", err)
+		if err := addOSVFindings(cmd.Context(), opts, &in); err != nil {
+			return err
 		}
-		oldOSV, newOSV, err := matchOSVBothSides(ctx, client, oldDoc.OSVPackages, newDoc.OSVPackages)
-		if err != nil {
-			return fmt.Errorf("matching against OSV.dev: %w", err)
-		}
-		in.Old.Findings = append(in.Old.Findings, oldOSV...)
-		in.New.Findings = append(in.New.Findings, newOSV...)
 	} else {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not compared",
 			"old_packages", len(oldDoc.OSVPackages), "new_packages", len(newDoc.OSVPackages))
-		// Without findings every golang/cargo package would look clean on
-		// both sides; drop them so they can't produce entries at all.
+		// Without findings, every golang/cargo package would look clean on
+		// both sides, so leave them out of the diff entirely.
 		in.Old.Doc.OSVPackages, in.New.Doc.OSVPackages = nil, nil
 	}
 
-	res := diff.Compute(in)
-	res.Tooling = toolingOf("diff", opts.osvEnabled, skippedGLSAs)
-	res.Old = releaseOf(oldDoc)
-	res.New = releaseOf(newDoc)
-	res.NotChecked.OSVDisabled = !opts.osvEnabled
-	slog.Info("diff computed", "fixed", res.Summary.Fixed, "removed", res.Summary.Removed,
-		"introduced", res.Summary.Introduced, "still_affected", res.Summary.StillAffected, "review", res.Summary.Review)
+	result := diff.Compute(in)
+	result.Tooling = opts.tooling("diff", skippedGLSAs)
+	result.Old = releaseOf(oldDoc)
+	result.New = releaseOf(newDoc)
+	result.NotChecked.OSVDisabled = !opts.osvEnabled
+	slog.Info("diff computed", "fixed", result.Summary.Fixed, "removed", result.Summary.Removed,
+		"introduced", result.Summary.Introduced, "still_affected", result.Summary.StillAffected, "review", result.Summary.Review)
 
-	var out []byte
-	switch opts.format {
-	case "changelog":
-		out = []byte(diff.FormatChangelog(res))
-	default:
-		out, err = json.MarshalIndent(res, "", "  ")
-		if err != nil {
-			return fmt.Errorf("encoding diff as JSON: %w", err)
-		}
-		out = append(out, '\n')
+	if opts.format == "changelog" {
+		return writeOutput(cmd, opts.outPath, []byte(diff.FormatChangelog(result)))
 	}
-	return writeOutput(cmd, opts.outPath, out)
+	return writeJSON(cmd, opts.outPath, result)
 }
 
-// matchOSVBothSides queries OSV.dev once for the union of both sides'
-// packages, so that both are matched against the same snapshot of OSV.dev
-// data, and splits the findings back per side.
+// addOSVFindings rechecks curl's GLSA findings and adds the OSV.dev
+// findings of both sides. One timeout covers all of it.
+//
+// The curl recheck only runs here, not in generate: Gentoo's curl GLSAs
+// bundle years of CVEs under one range, so without it the changelog would
+// list CVEs as newly fixed that the previous release had fixed long ago.
+// It needs OSV.dev, so it is skipped with --osv=false.
+func addOSVFindings(ctx context.Context, opts diffOptions, in *diff.Input) error {
+	ctx, cancel := withTimeout(ctx, opts.osvTimeout)
+	defer cancel()
+	client := &osv.Client{BaseURL: opts.osvBaseURL}
+
+	if err := applyCurlAdvisories(ctx, client, in); err != nil {
+		return fmt.Errorf("fetching curl advisories from OSV.dev: %w", err)
+	}
+	oldFindings, newFindings, err := matchOSVBothSides(ctx, client, in.Old.Doc.OSVPackages, in.New.Doc.OSVPackages)
+	if err != nil {
+		return fmt.Errorf("matching against OSV.dev: %w", err)
+	}
+	in.Old.Findings = append(in.Old.Findings, oldFindings...)
+	in.New.Findings = append(in.New.Findings, newFindings...)
+	return nil
+}
+
+// matchOSVBothSides queries OSV.dev once for the packages of both sides,
+// so both are matched against the same OSV.dev data, then splits the
+// findings back per side.
 func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs []sbom.Package) (oldFindings, newFindings []match.Finding, err error) {
-	inOld, inNew := map[sbom.Package]bool{}, map[sbom.Package]bool{}
-	var union []sbom.Package
-	add := func(pkgs []sbom.Package, side map[sbom.Package]bool) {
-		for _, p := range pkgs {
-			if !inOld[p] && !inNew[p] {
-				union = append(union, p)
-			}
-			side[p] = true
+	inOld, inNew := toSet(oldPkgs), toSet(newPkgs)
+	var bothSides []sbom.Package
+	seen := map[sbom.Package]bool{}
+	for _, pkg := range append(slices.Clone(oldPkgs), newPkgs...) {
+		if !seen[pkg] {
+			seen[pkg] = true
+			bothSides = append(bothSides, pkg)
 		}
 	}
-	add(oldPkgs, inOld)
-	add(newPkgs, inNew)
-
-	findings, err := match.RunOSV(ctx, union, client)
+	findings, err := match.RunOSV(ctx, bothSides, client)
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, f := range findings {
-		if inOld[f.Package] {
-			oldFindings = append(oldFindings, f)
+	for _, finding := range findings {
+		if inOld[finding.Package] {
+			oldFindings = append(oldFindings, finding)
 		}
-		if inNew[f.Package] {
-			newFindings = append(newFindings, f)
+		if inNew[finding.Package] {
+			newFindings = append(newFindings, finding)
 		}
 	}
 	return oldFindings, newFindings, nil
 }
 
-// applyCurlAdvisories rechecks both sides' GLSA findings for curl against
-// curl's own advisories on OSV.dev (see match.ApplyCurlAdvisories), so CVEs
-// fixed upstream long before the older release don't show up as fixed now.
+// applyCurlAdvisories rechecks the curl GLSA findings of both sides
+// against curl's own advisories on OSV.dev (see match.ApplyCurlAdvisories).
 func applyCurlAdvisories(ctx context.Context, client *osv.Client, in *diff.Input) error {
 	ids := match.CurlAdvisoryIDs(append(slices.Clone(in.Old.Findings), in.New.Findings...))
 	if len(ids) == 0 {
@@ -204,13 +180,20 @@ func applyCurlAdvisories(ctx context.Context, client *osv.Client, in *diff.Input
 	return nil
 }
 
-// releaseOf describes one side of the diff. A product ID that can't be
-// derived is left empty: the diff doesn't need it to be correct.
+// releaseOf describes one side of the diff. The product ID is left empty
+// if it can't be derived, since the diff doesn't depend on it.
 func releaseOf(doc sbom.Document) diff.Release {
 	id, err := deriveProductID(doc.Name)
 	if err != nil {
 		slog.Warn("cannot derive a product ID for the diff output", "error", err)
-		id = ""
 	}
 	return diff.Release{SBOMName: doc.Name, ProductID: id}
+}
+
+func toSet(pkgs []sbom.Package) map[sbom.Package]bool {
+	set := make(map[sbom.Package]bool, len(pkgs))
+	for _, pkg := range pkgs {
+		set[pkg] = true
+	}
+	return set
 }

@@ -23,23 +23,13 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	return &Client{BaseURL: srv.URL, RetryBackoff: time.Millisecond}
 }
 
-func TestNewClientDefaults(t *testing.T) {
-	c := NewClient()
-	if got := c.baseURL(); got != DefaultBaseURL {
-		t.Errorf("baseURL() = %q, want %q", got, DefaultBaseURL)
-	}
-	if got := c.batchSize(); got != DefaultBatchSize {
-		t.Errorf("batchSize() = %d, want %d", got, DefaultBatchSize)
-	}
-	if got := c.vulnFetchConcurrency(); got != DefaultVulnFetchConcurrency {
-		t.Errorf("vulnFetchConcurrency() = %d, want %d", got, DefaultVulnFetchConcurrency)
-	}
-	if c.httpClient() != http.DefaultClient {
-		t.Error("httpClient() should default to http.DefaultClient")
-	}
+func goPackage(name, version string) Package {
+	return Package{Ecosystem: "Go", Name: name, Version: version}
 }
 
-func TestQueryReturnsVulnerabilitiesPerPurl(t *testing.T) {
+var testPackage = goPackage("example.com/mod", "v1.0.0")
+
+func TestQueryReturnsVulnerabilitiesPerPackage(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/querybatch":
@@ -63,7 +53,6 @@ func TestQueryReturnsVulnerabilitiesPerPurl(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(vulnResponse{
 				ID:      "GHSA-aaaa-bbbb-cccc",
 				Aliases: []string{"CVE-2026-1234"},
-				Summary: "example vulnerability",
 			})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -72,47 +61,30 @@ func TestQueryReturnsVulnerabilitiesPerPurl(t *testing.T) {
 	}
 
 	c := newTestClient(t, handler)
-	got, err := c.Query(context.Background(), []string{
-		"pkg:golang/example.com/vulnerable@v1.0.0",
-		"pkg:golang/example.com/safe@v2.0.0",
-	})
+	vulnerablePackage, safePackage := goPackage("example.com/vulnerable", "v1.0.0"), goPackage("example.com/safe", "v2.0.0")
+	got, err := c.Query(context.Background(), []Package{vulnerablePackage, safePackage})
 	if err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 
-	vulnerable := got["pkg:golang/example.com/vulnerable@v1.0.0"]
+	vulnerable := got[vulnerablePackage]
 	if len(vulnerable) != 1 {
-		t.Fatalf("got %d vulnerabilities for vulnerable purl, want 1: %+v", len(vulnerable), vulnerable)
+		t.Fatalf("got %d vulnerabilities for vulnerable package, want 1: %+v", len(vulnerable), vulnerable)
 	}
 	if vulnerable[0].ID != "GHSA-aaaa-bbbb-cccc" {
 		t.Errorf("ID = %q, want GHSA-aaaa-bbbb-cccc", vulnerable[0].ID)
 	}
-	if got := vulnerable[0].CVEs(); len(got) != 1 || got[0] != "CVE-2026-1234" {
-		t.Errorf("CVEs() = %q, want [CVE-2026-1234]", got)
+	if aliases := vulnerable[0].Aliases; len(aliases) != 1 || aliases[0] != "CVE-2026-1234" {
+		t.Errorf("Aliases = %q, want [CVE-2026-1234]", aliases)
 	}
-	if vulnerable[0].Summary != "example vulnerability" {
-		t.Errorf("Summary = %q", vulnerable[0].Summary)
-	}
-
-	// Query's contract (see its docstring) is that purls with zero
-	// vulnerabilities are omitted from the result map entirely, not mapped
-	// to an empty slice - so this must assert the key is absent, not just
-	// that any present value would be empty.
-	if safe, ok := got["pkg:golang/example.com/safe@v2.0.0"]; ok {
-		t.Errorf("got an entry for safe purl with zero vulnerabilities, want the key to be absent: %+v", safe)
+	if safe, ok := got[safePackage]; ok {
+		t.Errorf("got an entry for safe package with zero vulnerabilities, want the key to be absent: %+v", safe)
 	}
 }
 
-// TestQueryDeduplicatesPurlsAndVulnIDs asserts two distinct kinds of
-// deduplication: input purls are deduplicated before querying (so
-// querybatch is only called once for two identical purls), and the set of
-// vulnerability IDs to fetch via GET /v1/vulns/{id} is deduplicated across
-// all purls' results before fetching (so a single ID is only ever fetched
-// once, even if it's returned for the same purl twice). The latter does
-// NOT mean the returned per-purl []Vulnerability itself is deduplicated:
-// if querybatch legitimately lists the same ID twice for one purl, that
-// purl's result still contains two entries.
-func TestQueryDeduplicatesPurlsAndVulnIDs(t *testing.T) {
+// Packages are deduplicated before querying, and vulnerability IDs before
+// fetching, but an ID listed twice for one package is still returned twice.
+func TestQueryDeduplicatesPackagesAndVulnIDs(t *testing.T) {
 	var queryBatchCalls, vulnCalls int
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -143,8 +115,7 @@ func TestQueryDeduplicatesPurlsAndVulnIDs(t *testing.T) {
 	}
 
 	c := newTestClient(t, handler)
-	purl := "pkg:golang/example.com/mod@v1.0.0"
-	got, err := c.Query(context.Background(), []string{purl, purl, ""})
+	got, err := c.Query(context.Background(), []Package{testPackage, testPackage, {}})
 	if err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
@@ -155,8 +126,18 @@ func TestQueryDeduplicatesPurlsAndVulnIDs(t *testing.T) {
 	if vulnCalls != 1 {
 		t.Errorf("GET /v1/vulns/{id} called %d times, want 1 (fetching should be deduplicated across the unique vulnerability ID set, even though the same ID appears twice in this querybatch result)", vulnCalls)
 	}
-	if len(got[purl]) != 2 {
-		t.Errorf("got %d vulnerabilities, want 2 (the querybatch result listed the same ID twice for this purl, so the returned per-purl list is not itself deduplicated, only the underlying fetch is)", len(got[purl]))
+	if len(got[testPackage]) != 2 {
+		t.Errorf("got %d vulnerabilities, want 2 (the querybatch result listed the same ID twice for this package, so the returned per-package list is not itself deduplicated, only the underlying fetch is)", len(got[testPackage]))
+	}
+}
+
+func TestQueryUsesDefaultBatchSizeWhenNegative(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: []queryResult{{}}})
+	})
+	c.BatchSize = -1
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err != nil {
+		t.Fatalf("Query returned error: %v", err)
 	}
 }
 
@@ -198,15 +179,13 @@ func TestQueryChunksLargeBatches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	c := &Client{BaseURL: srv.URL, BatchSize: 2}
 
-	purls := []string{
-		"pkg:golang/a@v1", "pkg:golang/b@v1", "pkg:golang/c@v1", "pkg:golang/d@v1", "pkg:golang/e@v1",
-	}
-	if _, err := c.Query(context.Background(), purls); err != nil {
+	pkgs := []Package{goPackage("a", "v1"), goPackage("b", "v1"), goPackage("c", "v1"), goPackage("d", "v1"), goPackage("e", "v1")}
+	if _, err := c.Query(context.Background(), pkgs); err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 
 	if len(batches) != 3 {
-		t.Fatalf("got %d batch requests, want 3 (5 purls at batch size 2): %+v", len(batches), batches)
+		t.Fatalf("got %d batch requests, want 3 (5 packages at batch size 2): %+v", len(batches), batches)
 	}
 	if batches[0][0] != 2 || batches[1][0] != 2 || batches[2][0] != 1 {
 		t.Errorf("batch sizes = %v, want [2 2 1]", batches)
@@ -219,7 +198,7 @@ func TestQueryPropagatesHTTPErrors(t *testing.T) {
 		_, _ = w.Write([]byte("boom"))
 	})
 
-	_, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"})
+	_, err := c.Query(context.Background(), []Package{testPackage})
 	if err == nil {
 		t.Fatal("expected error for a 500 response, got nil")
 	}
@@ -236,7 +215,7 @@ func TestQueryPropagatesResultCountMismatch(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: nil})
 	})
 
-	_, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"})
+	_, err := c.Query(context.Background(), []Package{testPackage})
 	if err == nil {
 		t.Fatal("expected error for a result-count mismatch, got nil")
 	}
@@ -253,9 +232,23 @@ func TestQueryRejectsMismatchedVulnerabilityRecord(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(body)
 		})
-		if _, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"}); err == nil {
+		if _, err := c.Query(context.Background(), []Package{testPackage}); err == nil {
 			t.Errorf("response %+v for GO-1: expected an error, got nil", body)
 		}
+	}
+}
+
+func TestQueryRejectsEmptyVulnerabilityID(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/querybatch" {
+			_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: []queryResult{{Vulns: []queryVuln{{ID: ""}}}}})
+			return
+		}
+		t.Errorf("unexpected request: %s", r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err == nil {
+		t.Fatal("expected an error for a querybatch vulnerability without an ID, got nil")
 	}
 }
 
@@ -267,27 +260,34 @@ func TestQueryAcceptsVulnerabilityRecordFetchedByAlias(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(vulnResponse{ID: "GO-1", Aliases: []string{"GHSA-1", "CVE-2024-1"}})
 	})
-	got, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"})
+	got, err := c.Query(context.Background(), []Package{testPackage})
 	if err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
-	if vs := got["pkg:golang/example.com/mod@v1.0.0"]; len(vs) != 1 || vs[0].ID != "GO-1" {
+	if vs := got[testPackage]; len(vs) != 1 || vs[0].ID != "GO-1" {
 		t.Errorf("got %+v, want the GO-1 record", got)
 	}
 }
 
-func TestVulnerabilityCVEsFallsBackToID(t *testing.T) {
-	v := Vulnerability{ID: "GHSA-no-cve", Aliases: []string{"GO-2024-1"}}
-	if got := v.CVEs(); len(got) != 1 || got[0] != "GHSA-no-cve" {
-		t.Errorf("CVEs() = %q, want [GHSA-no-cve] (no CVE-prefixed alias present)", got)
+func TestQuerySortsByFetchedRecordID(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/querybatch" {
+			_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: []queryResult{{Vulns: []queryVuln{{ID: "GHSA-1"}, {ID: "GO-1"}}}}})
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/v1/vulns/")
+		if id == "GHSA-1" {
+			id = "GO-2"
+		}
+		_ = json.NewEncoder(w).Encode(vulnResponse{ID: id, Aliases: []string{"GHSA-1"}})
+	})
+	got, err := c.Query(context.Background(), []Package{testPackage})
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
 	}
-}
-
-func TestVulnerabilityCVEsReturnsEveryCVEAlias(t *testing.T) {
-	v := Vulnerability{ID: "GO-2024-1", Aliases: []string{"CVE-2024-2", "GHSA-x", "CVE-2024-1", "CVE-2024-2"}}
-	got := v.CVEs()
-	if len(got) != 2 || got[0] != "CVE-2024-1" || got[1] != "CVE-2024-2" {
-		t.Errorf("CVEs() = %q, want [CVE-2024-1 CVE-2024-2]", got)
+	vs := got[testPackage]
+	if len(vs) != 2 || vs[0].ID != "GO-1" || vs[1].ID != "GO-2" {
+		t.Errorf("got %+v, want GO-1 then GO-2", vs)
 	}
 }
 
@@ -322,18 +322,19 @@ func TestQueryFollowsNextPageToken(t *testing.T) {
 	}
 
 	c := newTestClient(t, handler)
-	got, err := c.Query(context.Background(), []string{"pkg:golang/example.com/big@v1.0.0", "pkg:golang/example.com/small@v1.0.0"})
+	bigPackage, smallPackage := goPackage("example.com/big", "v1.0.0"), goPackage("example.com/small", "v1.0.0")
+	got, err := c.Query(context.Background(), []Package{bigPackage, smallPackage})
 	if err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 	if batchCalls != 2 {
-		t.Errorf("got %d querybatch calls, want 2 (second one only for the paginated purl)", batchCalls)
+		t.Errorf("got %d querybatch calls, want 2 (second one only for the paginated package)", batchCalls)
 	}
-	big := got["pkg:golang/example.com/big@v1.0.0"]
+	big := got[bigPackage]
 	if len(big) != 2 || big[0].ID != "GO-1" || big[1].ID != "GO-2" {
 		t.Errorf("big = %+v, want GO-1 and GO-2 from both pages", big)
 	}
-	if small := got["pkg:golang/example.com/small@v1.0.0"]; len(small) != 1 || small[0].ID != "GO-3" {
+	if small := got[smallPackage]; len(small) != 1 || small[0].ID != "GO-3" {
 		t.Errorf("small = %+v, want GO-3", small)
 	}
 }
@@ -342,7 +343,7 @@ func TestQueryStopsRunawayPagination(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: []queryResult{{NextPageToken: "again"}}})
 	})
-	if _, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"}); err == nil {
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err == nil {
 		t.Fatal("expected error for a server that never stops paginating, got nil")
 	}
 }
@@ -367,14 +368,14 @@ func TestQueryRetriesTransientErrors(t *testing.T) {
 		}
 	})
 
-	got, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"})
+	got, err := c.Query(context.Background(), []Package{testPackage})
 	if err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 	if calls != 3 {
 		t.Errorf("got %d querybatch attempts, want 3", calls)
 	}
-	if len(got["pkg:golang/example.com/mod@v1.0.0"]) != 1 {
+	if len(got[testPackage]) != 1 {
 		t.Errorf("got %+v, want one vulnerability", got)
 	}
 }
@@ -385,7 +386,7 @@ func TestQueryDoesNotRetryClientErrors(t *testing.T) {
 		calls++
 		w.WriteHeader(http.StatusBadRequest)
 	})
-	if _, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"}); err == nil {
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err == nil {
 		t.Fatal("expected error for a 400 response, got nil")
 	}
 	if calls != 1 {
@@ -418,7 +419,7 @@ func TestQueryHandlesTrailingSlashInBaseURL(t *testing.T) {
 	// Deliberately add a trailing slash, as a user might when copy-pasting
 	// a --osv-base-url value.
 	c := &Client{BaseURL: srv.URL + "/"}
-	if _, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"}); err != nil {
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 
@@ -458,7 +459,7 @@ func TestQueryPreservesBaseURLPathPrefix(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c := &Client{BaseURL: srv.URL + "/api/"}
-	if _, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"}); err != nil {
+	if _, err := c.Query(context.Background(), []Package{testPackage}); err != nil {
 		t.Fatalf("Query returned error: %v", err)
 	}
 
@@ -484,7 +485,7 @@ func TestFetchVulnerabilitiesPropagatesHTTPErrors(t *testing.T) {
 	}
 
 	c := newTestClient(t, handler)
-	_, err := c.Query(context.Background(), []string{"pkg:golang/example.com/mod@v1.0.0"})
+	_, err := c.Query(context.Background(), []Package{testPackage})
 	if err == nil {
 		t.Fatal("expected error when fetching vulnerability details fails, got nil")
 	}
@@ -623,21 +624,6 @@ func TestFetchVulnerabilitiesFailsWhenParentContextIsCanceled(t *testing.T) {
 
 	if got, err := c.fetchVulnerabilities(ctx, []string{"GO-1", "GO-2", "GO-3"}, false); err == nil {
 		t.Fatalf("got %d of 3 vulnerabilities and no error, want a cancellation error", len(got))
-	}
-}
-
-func TestNewQuery(t *testing.T) {
-	cases := map[string]query{
-		"pkg:golang/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.0": {Package: queryPackage{Name: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", Ecosystem: "Go"}, Version: "v1.5.0"},
-		"pkg:golang/example.com/mod@v1.0.0%2Bincompatible?type=module#sub":   {Package: queryPackage{Name: "example.com/mod", Ecosystem: "Go"}, Version: "v1.0.0+incompatible"},
-		"pkg:cargo/smallvec@1.6.0":   {Package: queryPackage{Name: "smallvec", Ecosystem: "crates.io"}, Version: "1.6.0"},
-		"pkg:npm/left-pad@1.0.0":     {Package: queryPackage{PURL: "pkg:npm/left-pad@1.0.0"}},
-		"pkg:golang/example.com/mod": {Package: queryPackage{PURL: "pkg:golang/example.com/mod"}},
-	}
-	for purl, want := range cases {
-		if got := newQuery(purl); got != want {
-			t.Errorf("newQuery(%q) = %+v, want %+v", purl, got, want)
-		}
 	}
 }
 

@@ -129,7 +129,7 @@ func TestRunAppliesVersionSchemeException(t *testing.T) {
 			Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260816.3.125"}},
 		}},
 	}
-	findings := Run(pkgs, []glsa.GLSA{g}, "amd64")
+	findings := RunGLSA(pkgs, []glsa.GLSA{g}, "amd64")
 	if len(findings) != 1 || findings[0].Status != StatusFixed {
 		t.Errorf("got %+v, want one fixed finding", findings)
 	}

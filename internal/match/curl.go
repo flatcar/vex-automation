@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/flatcar/vex-automation/internal/osv"
 )
+
+// This file corrects curl's GLSA findings using curl's own advisories. Only
+// the diff command uses it (see cli.addOSVFindings for why): RunGLSA makes
+// the findings, CurlAdvisoryIDs says which advisories to fetch from
+// OSV.dev, and ApplyCurlAdvisories rewrites the findings they disprove.
 
 // curlPackage is the ebuild whose GLSA findings ApplyCurlAdvisories
 // rechecks.
@@ -28,16 +32,14 @@ var plainCurlVersion = regexp.MustCompile(`^\d+\.\d+(\.\d+)*(-r\d+)?$`)
 // every CVE that a GLSA reports curl as affected by, sorted and
 // deduplicated.
 func CurlAdvisoryIDs(findings []Finding) []string {
-	seen := map[string]bool{}
 	var ids []string
-	for _, f := range findings {
-		if isCurlGLSAAffected(f) && !seen[f.CVE] {
-			seen[f.CVE] = true
-			ids = append(ids, curlAdvisoryPrefix+f.CVE)
+	for _, finding := range findings {
+		if isCurlGLSAAffected(finding) {
+			ids = append(ids, curlAdvisoryPrefix+finding.CVE)
 		}
 	}
-	sort.Strings(ids)
-	return ids
+	slices.Sort(ids)
+	return slices.Compact(ids)
 }
 
 // ApplyCurlAdvisories rechecks GLSA "affected" findings for curl against
@@ -49,25 +51,25 @@ func CurlAdvisoryIDs(findings []Finding) []string {
 // version does not map to an upstream release (see plainCurlVersion), are
 // kept. The input is not modified.
 func ApplyCurlAdvisories(findings []Finding, advisories map[string]osv.Vulnerability) []Finding {
-	out := slices.Clone(findings)
-	for i, f := range out {
-		if !isCurlGLSAAffected(f) {
+	rechecked := slices.Clone(findings)
+	for i, finding := range rechecked {
+		if !isCurlGLSAAffected(finding) {
 			continue
 		}
-		adv, ok := advisories[curlAdvisoryPrefix+f.CVE]
-		if !ok || len(adv.AffectedVersions) == 0 || !plainCurlVersion.MatchString(f.Package.Version) {
+		advisory, ok := advisories[curlAdvisoryPrefix+finding.CVE]
+		if !ok || len(advisory.AffectedVersions) == 0 || !plainCurlVersion.MatchString(finding.Package.Version) {
 			continue
 		}
-		upstream, _, _ := strings.Cut(f.Package.Version, "-r")
-		if slices.Contains(adv.AffectedVersions, upstream) {
+		upstreamVersion, _, _ := strings.Cut(finding.Package.Version, "-r")
+		if slices.Contains(advisory.AffectedVersions, upstreamVersion) {
 			continue
 		}
-		out[i].Status = StatusNotAffected
-		out[i].Note = fmt.Sprintf("curl's own advisory %s does not list version %s as affected", adv.ID, upstream)
+		rechecked[i].Status = StatusNotAffected
+		rechecked[i].Note = fmt.Sprintf("curl's own advisory %s does not list version %s as affected", advisory.ID, upstreamVersion)
 	}
-	return out
+	return rechecked
 }
 
-func isCurlGLSAAffected(f Finding) bool {
-	return f.Source == SourceGLSA && f.Status == StatusAffected && f.Package.CategoryName() == curlPackage
+func isCurlGLSAAffected(finding Finding) bool {
+	return finding.Source == SourceGLSA && finding.Status == StatusAffected && finding.Package.CategoryName() == curlPackage
 }
