@@ -1,11 +1,10 @@
-package match
+package osv
 
 import (
 	"context"
 	"slices"
 	"strings"
 
-	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/vuln"
 )
@@ -16,14 +15,14 @@ var osvEcosystems = map[sbom.Ecosystem]string{
 	sbom.Cargo:  "crates.io",
 }
 
-// RunOSV asks OSV.dev about every golang/cargo package (sbom.Document.Modules). OSV.dev only
-// returns vulnerabilities that affect the exact version asked about, so
+// Match asks OSV.dev about every golang/cargo module (sbom.Document.Modules).
+// OSV.dev only returns vulnerabilities that affect the exact version asked about, so
 // every finding is affected. A fixed vulnerability therefore produces no
 // finding at all; package diff treats that silence as a fix.
-func RunOSV(ctx context.Context, pkgs []sbom.Package, client *osv.Client) ([]vuln.Finding, error) {
-	queries := make([]osv.Package, len(pkgs))
+func Match(ctx context.Context, pkgs []sbom.Package, client *Client) ([]vuln.Finding, error) {
+	queries := make([]Package, len(pkgs))
 	for i, pkg := range pkgs {
-		queries[i] = osv.Package{Ecosystem: osvEcosystems[pkg.Ecosystem], Name: pkg.Name, Version: pkg.Version}
+		queries[i] = Package{Ecosystem: osvEcosystems[pkg.Ecosystem], Name: pkg.Name, Version: pkg.Version}
 	}
 	results, err := client.Query(ctx, queries)
 	if err != nil {
@@ -64,7 +63,7 @@ func RunOSV(ctx context.Context, pkgs []sbom.Package, client *osv.Client) ([]vul
 // under its smallest record ID if it has none. Groups are built across all
 // packages, so the IDs stay the same when one version returns several
 // records of a group and another version only one.
-func reportedIDsByRecord(results map[osv.Package][]osv.Vulnerability) map[string][]string {
+func reportedIDsByRecord(results map[Package][]Vulnerability) map[string][]string {
 	links := map[string][]string{}
 	isRecord := map[string]bool{}
 	for _, records := range results {

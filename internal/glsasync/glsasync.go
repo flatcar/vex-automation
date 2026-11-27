@@ -15,9 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flatcar/vex-automation/internal/source/glsa"
 	"golang.org/x/term"
-
-	"github.com/flatcar/vex-automation/internal/glsa"
 )
 
 // DefaultRepoURL is Gentoo's GLSA repository, the same data Flatcar's

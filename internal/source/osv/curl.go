@@ -1,18 +1,16 @@
-package match
+package osv
 
 import (
-	"github.com/flatcar/vex-automation/internal/vuln"
-
 	"fmt"
 	"regexp"
 	"slices"
 	"strings"
 
-	"github.com/flatcar/vex-automation/internal/osv"
+	"github.com/flatcar/vex-automation/internal/vuln"
 )
 
 // This file corrects curl's GLSA findings using curl's own advisories. Only
-// the diff command uses it (see cli.addOSVFindings for why): RunGLSA makes
+// the diff command uses it (see cli.addOSVFindings for why): glsa.Match makes
 // the findings, CurlAdvisoryIDs says which advisories to fetch from
 // OSV.dev, and ApplyCurlAdvisories rewrites the findings they disprove.
 
@@ -52,7 +50,7 @@ func CurlAdvisoryIDs(findings []vuln.Finding) []string {
 // finding becomes not_affected. Findings without an advisory, or whose
 // version does not map to an upstream release (see plainCurlVersion), are
 // kept. The input is not modified.
-func ApplyCurlAdvisories(findings []vuln.Finding, advisories map[string]osv.Vulnerability) []vuln.Finding {
+func ApplyCurlAdvisories(findings []vuln.Finding, advisories map[string]Vulnerability) []vuln.Finding {
 	rechecked := slices.Clone(findings)
 	for i, finding := range rechecked {
 		if !isCurlGLSAAffected(finding) {

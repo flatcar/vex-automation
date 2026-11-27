@@ -12,11 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/flatcar/vex-automation/internal/glsa"
-	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/source/glsa"
+	"github.com/flatcar/vex-automation/internal/source/osv"
+	"github.com/spf13/cobra"
 )
 
 // defaultOSVTimeout makes a network problem fail the run instead of

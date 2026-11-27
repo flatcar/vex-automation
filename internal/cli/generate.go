@@ -8,13 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
-
-	"github.com/flatcar/vex-automation/internal/match"
-	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/source/glsa"
+	"github.com/flatcar/vex-automation/internal/source/osv"
 	"github.com/flatcar/vex-automation/internal/vexgen"
 	"github.com/flatcar/vex-automation/internal/vuln"
+	"github.com/spf13/cobra"
 )
 
 type generateOptions struct {
@@ -82,7 +81,7 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 
 	// Both matchers return findings in the same form, so the document can
 	// be built from one combined list.
-	findings := match.RunGLSA(doc.Ebuilds, glsas, opts.arch)
+	findings := glsa.Match(doc.Ebuilds, glsas, opts.arch)
 	if opts.osvEnabled {
 		osvFindings, err := matchOSV(cmd, doc.Modules, opts.osvBaseURL, opts.osvTimeout)
 		if err != nil {
@@ -109,7 +108,7 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 func matchOSV(cmd *cobra.Command, pkgs []sbom.Package, baseURL string, timeout time.Duration) ([]vuln.Finding, error) {
 	ctx, cancel := withTimeout(cmd.Context(), timeout)
 	defer cancel()
-	return match.RunOSV(ctx, pkgs, &osv.Client{BaseURL: baseURL})
+	return osv.Match(ctx, pkgs, &osv.Client{BaseURL: baseURL})
 }
 
 // writeJSON writes value as indented JSON to path, or to stdout.

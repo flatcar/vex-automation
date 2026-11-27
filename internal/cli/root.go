@@ -7,8 +7,8 @@
 //	sbom.Load       read the release's SBOM and sort its packages by the
 //	                source that can check them
 //	glsa.LoadDir    read Gentoo's advisories (downloaded by sync-glsa)
-//	match.RunGLSA   check ebuild packages against the GLSA version ranges
-//	match.RunOSV    check golang/cargo packages against OSV.dev (network)
+//	glsa.Match   check ebuild packages against the GLSA version ranges
+//	osv.Match    check golang/cargo packages against OSV.dev (network)
 //	vexgen.Build    write one OpenVEX statement per vulnerability
 //
 // diff answers "what did the newer release fix?", to draft the release
@@ -16,7 +16,7 @@
 // advisories, so that any change in the result comes from the releases
 // and not from the data. Then:
 //
-//	match.ApplyCurlAdvisories  correct curl's GLSA findings (too coarse)
+//	osv.ApplyCurlAdvisories  correct curl's GLSA findings (too coarse)
 //	diff.Compute               classify each (vulnerability, package) pair
 //	diff.FormatChangelog       optionally render the fixed ones as Markdown
 //

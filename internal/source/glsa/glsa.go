@@ -5,7 +5,7 @@
 //
 // Flatcar is built from Gentoo ebuilds, so Gentoo's advisories apply to
 // its ebuild packages. The directory usually comes from the sync-glsa
-// command (package glsasync), and the advisories go to match.RunGLSA.
+// command (package glsasync), and the advisories go to glsa.Match.
 package glsa
 
 import (

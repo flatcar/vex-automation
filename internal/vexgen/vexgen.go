@@ -8,8 +8,6 @@
 package vexgen
 
 import (
-	"github.com/flatcar/vex-automation/internal/vuln"
-
 	"errors"
 	"fmt"
 	"maps"
@@ -17,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/flatcar/vex-automation/internal/vuln"
 	"github.com/openvex/go-vex/pkg/vex"
 )
 

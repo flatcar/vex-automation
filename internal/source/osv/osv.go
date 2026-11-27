@@ -8,7 +8,7 @@
 //  2. GET /v1/vulns/{id}: the full record of each of those IDs.
 //
 // Flatcar images ship Go and Rust binaries that Gentoo's GLSAs don't
-// cover, so OSV.dev fills that gap: match.RunOSV uses Query for them, and
+// cover, so OSV.dev fills that gap: Match uses Query for them, and
 // the diff command uses Get to fetch curl's own advisories.
 package osv
 

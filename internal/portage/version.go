@@ -15,7 +15,7 @@
 // incorrect VEX statement.
 //
 // GLSAs state which versions are vulnerable as ranges such as "lt 1.2.3",
-// so every GLSA verdict in package match comes down to Satisfies. Plain
+// so every GLSA verdict in glsa.Match comes down to Satisfies. Plain
 // semantic versioning can't be used instead: Gentoo versions have "-rN"
 // revisions, "_p"/"_rc" suffixes and letters ("1.0a") that it orders
 // differently or rejects.

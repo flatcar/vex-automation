@@ -4,10 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/openvex/go-vex/pkg/vex"
-
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/vuln"
+	"github.com/openvex/go-vex/pkg/vex"
 )
 
 func TestBuildRequiresProductID(t *testing.T) {

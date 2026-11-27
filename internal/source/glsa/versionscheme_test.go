@@ -1,9 +1,8 @@
-package match
+package glsa
 
 import (
 	"testing"
 
-	"github.com/flatcar/vex-automation/internal/glsa"
 	"github.com/flatcar/vex-automation/internal/sbom"
 	"github.com/flatcar/vex-automation/internal/vuln"
 )
@@ -14,21 +13,21 @@ import (
 func TestEvaluatePackageCACertificates(t *testing.T) {
 	const name = "app-misc/ca-certificates"
 	// GLSA 202610-01, compromised intermediate CA.
-	nssRanges := glsa.AffectedPackage{
+	nssRanges := AffectedPackage{
 		CategoryName: name,
-		Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260816.3.125"}},
-		Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260816.3.125"}},
+		Vulnerable:   []VersionRange{{Op: "lt", Version: "20260816.3.125"}},
+		Unaffected:   []VersionRange{{Op: "ge", Version: "20260816.3.125"}},
 	}
 	// GLSA 201412-09, a date-only bundle from 2011.
-	dateRanges := glsa.AffectedPackage{
+	dateRanges := AffectedPackage{
 		CategoryName: name,
-		Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20110502-r1"}},
-		Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20110502-r1"}},
+		Vulnerable:   []VersionRange{{Op: "lt", Version: "20110502-r1"}},
+		Unaffected:   []VersionRange{{Op: "ge", Version: "20110502-r1"}},
 	}
 	tests := []struct {
 		name    string
 		version string
-		ap      glsa.AffectedPackage
+		ap      AffectedPackage
 		want    vuln.Status
 	}{
 		{"NSS version with the fix", "3.125", nssRanges, vuln.StatusFixed},
@@ -40,58 +39,58 @@ func TestEvaluatePackageCACertificates(t *testing.T) {
 		{"unknown installed scheme", "not-nss", nssRanges, vuln.StatusUnderInvestigation},
 		{
 			"recent date-only GLSA version can't be ordered", "3.125",
-			glsa.AffectedPackage{CategoryName: name, Vulnerable: []glsa.VersionRange{{Op: "lt", Version: "20270101"}}},
+			AffectedPackage{CategoryName: name, Vulnerable: []VersionRange{{Op: "lt", Version: "20270101"}}},
 			vuln.StatusUnderInvestigation,
 		},
 		{
 			"fix is only a Gentoo revision bump", "3.125",
-			glsa.AffectedPackage{
+			AffectedPackage{
 				CategoryName: name,
-				Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260816.3.125-r1"}},
-				Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260816.3.125-r1"}},
+				Vulnerable:   []VersionRange{{Op: "lt", Version: "20260816.3.125-r1"}},
+				Unaffected:   []VersionRange{{Op: "ge", Version: "20260816.3.125-r1"}},
 			},
 			vuln.StatusUnderInvestigation,
 		},
 		{
 			"lt/ge pair at the installed NSS version is trusted", "3.125",
-			glsa.AffectedPackage{
+			AffectedPackage{
 				CategoryName: name,
-				Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260901.3.125"}},
-				Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260901.3.125"}},
+				Vulnerable:   []VersionRange{{Op: "lt", Version: "20260901.3.125"}},
+				Unaffected:   []VersionRange{{Op: "ge", Version: "20260901.3.125"}},
 			},
 			vuln.StatusFixed,
 		},
 		{
 			"vulnerable bundle shares the installed NSS version", "3.125",
-			glsa.AffectedPackage{
+			AffectedPackage{
 				CategoryName: name,
-				Vulnerable:   []glsa.VersionRange{{Op: "eq", Version: "20260816.3.125"}},
-				Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260901.3.125"}},
+				Vulnerable:   []VersionRange{{Op: "eq", Version: "20260816.3.125"}},
+				Unaffected:   []VersionRange{{Op: "ge", Version: "20260901.3.125"}},
 			},
 			vuln.StatusUnderInvestigation,
 		},
 		{
 			"boundary at the installed NSS version, no matching pair", "3.125",
-			glsa.AffectedPackage{CategoryName: name, Vulnerable: []glsa.VersionRange{{Op: "lt", Version: "20260901.3.125"}}},
+			AffectedPackage{CategoryName: name, Vulnerable: []VersionRange{{Op: "lt", Version: "20260901.3.125"}}},
 			vuln.StatusUnderInvestigation,
 		},
 		{
 			"newer NSS version than a revision-bump fix", "3.126",
-			glsa.AffectedPackage{
+			AffectedPackage{
 				CategoryName: name,
-				Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260816.3.125-r1"}},
-				Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260816.3.125-r1"}},
+				Vulnerable:   []VersionRange{{Op: "lt", Version: "20260816.3.125-r1"}},
+				Unaffected:   []VersionRange{{Op: "ge", Version: "20260816.3.125-r1"}},
 			},
 			vuln.StatusFixed,
 		},
 		{
 			"glob range can't be translated", "3.125",
-			glsa.AffectedPackage{CategoryName: name, Vulnerable: []glsa.VersionRange{{Op: "eq", Version: "20260816.3.12*"}}},
+			AffectedPackage{CategoryName: name, Vulnerable: []VersionRange{{Op: "eq", Version: "20260816.3.12*"}}},
 			vuln.StatusUnderInvestigation,
 		},
 		{
 			"revision-only range can't be translated", "3.125",
-			glsa.AffectedPackage{CategoryName: name, Vulnerable: []glsa.VersionRange{{Op: "rlt", Version: "20260816.3.125-r2"}}},
+			AffectedPackage{CategoryName: name, Vulnerable: []VersionRange{{Op: "rlt", Version: "20260816.3.125-r2"}}},
 			vuln.StatusUnderInvestigation,
 		},
 	}
@@ -109,9 +108,9 @@ func TestEvaluatePackageCACertificates(t *testing.T) {
 }
 
 func TestEvaluatePackageWithoutExceptionIsUnchanged(t *testing.T) {
-	ap := glsa.AffectedPackage{
+	ap := AffectedPackage{
 		CategoryName: "dev-libs/foo",
-		Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260816.3.125"}},
+		Vulnerable:   []VersionRange{{Op: "lt", Version: "20260816.3.125"}},
 	}
 	if got, _ := evaluatePackage("dev-libs/foo", "3.125", ap); got != vuln.StatusAffected {
 		t.Errorf("got %q, want affected (no version scheme exception)", got)
@@ -120,17 +119,17 @@ func TestEvaluatePackageWithoutExceptionIsUnchanged(t *testing.T) {
 
 func TestRunAppliesVersionSchemeException(t *testing.T) {
 	pkgs := []sbom.Package{{Ecosystem: sbom.Ebuild, Category: "app-misc", Name: "ca-certificates", Version: "3.125", PURL: "pkg:ebuild/app-misc/ca-certificates@3.125"}}
-	g := glsa.GLSA{
+	g := GLSA{
 		ID:   "202610-01",
 		CVEs: []string{"CVE-2026-0001"},
-		Packages: []glsa.AffectedPackage{{
+		Packages: []AffectedPackage{{
 			CategoryName: "app-misc/ca-certificates",
 			Arch:         "*",
-			Vulnerable:   []glsa.VersionRange{{Op: "lt", Version: "20260816.3.125"}},
-			Unaffected:   []glsa.VersionRange{{Op: "ge", Version: "20260816.3.125"}},
+			Vulnerable:   []VersionRange{{Op: "lt", Version: "20260816.3.125"}},
+			Unaffected:   []VersionRange{{Op: "ge", Version: "20260816.3.125"}},
 		}},
 	}
-	findings := RunGLSA(pkgs, []glsa.GLSA{g}, "amd64")
+	findings := Match(pkgs, []GLSA{g}, "amd64")
 	if len(findings) != 1 || findings[0].Status != vuln.StatusFixed {
 		t.Errorf("got %+v, want one fixed finding", findings)
 	}

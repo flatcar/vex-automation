@@ -4,9 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/flatcar/vex-automation/internal/glsasync"
+	"github.com/spf13/cobra"
 )
 
 func newSyncGLSACmd() *cobra.Command {

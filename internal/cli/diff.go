@@ -6,13 +6,12 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/spf13/cobra"
-
 	"github.com/flatcar/vex-automation/internal/diff"
-	"github.com/flatcar/vex-automation/internal/match"
-	"github.com/flatcar/vex-automation/internal/osv"
 	"github.com/flatcar/vex-automation/internal/sbom"
+	"github.com/flatcar/vex-automation/internal/source/glsa"
+	"github.com/flatcar/vex-automation/internal/source/osv"
 	"github.com/flatcar/vex-automation/internal/vuln"
+	"github.com/spf13/cobra"
 )
 
 type diffOptions struct {
@@ -83,8 +82,8 @@ func runDiff(cmd *cobra.Command, opts diffOptions) error {
 		return err
 	}
 	in := diff.Input{
-		Old: diff.Side{Doc: oldDoc, Findings: match.RunGLSA(oldDoc.Ebuilds, glsas, opts.arch)},
-		New: diff.Side{Doc: newDoc, Findings: match.RunGLSA(newDoc.Ebuilds, glsas, opts.arch)},
+		Old: diff.Side{Doc: oldDoc, Findings: glsa.Match(oldDoc.Ebuilds, glsas, opts.arch)},
+		New: diff.Side{Doc: newDoc, Findings: glsa.Match(newDoc.Ebuilds, glsas, opts.arch)},
 	}
 	if opts.osvEnabled {
 		if err := addOSVFindings(cmd.Context(), opts, &in); err != nil {
@@ -149,7 +148,7 @@ func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs
 			bothSides = append(bothSides, pkg)
 		}
 	}
-	findings, err := match.RunOSV(ctx, bothSides, client)
+	findings, err := osv.Match(ctx, bothSides, client)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -165,9 +164,9 @@ func matchOSVBothSides(ctx context.Context, client *osv.Client, oldPkgs, newPkgs
 }
 
 // applyCurlAdvisories rechecks the curl GLSA findings of both sides
-// against curl's own advisories on OSV.dev (see match.ApplyCurlAdvisories).
+// against curl's own advisories on OSV.dev (see osv.ApplyCurlAdvisories).
 func applyCurlAdvisories(ctx context.Context, client *osv.Client, in *diff.Input) error {
-	ids := match.CurlAdvisoryIDs(append(slices.Clone(in.Old.Findings), in.New.Findings...))
+	ids := osv.CurlAdvisoryIDs(append(slices.Clone(in.Old.Findings), in.New.Findings...))
 	if len(ids) == 0 {
 		return nil
 	}
@@ -175,8 +174,8 @@ func applyCurlAdvisories(ctx context.Context, client *osv.Client, in *diff.Input
 	if err != nil {
 		return err
 	}
-	in.Old.Findings = match.ApplyCurlAdvisories(in.Old.Findings, advisories)
-	in.New.Findings = match.ApplyCurlAdvisories(in.New.Findings, advisories)
+	in.Old.Findings = osv.ApplyCurlAdvisories(in.Old.Findings, advisories)
+	in.New.Findings = osv.ApplyCurlAdvisories(in.New.Findings, advisories)
 	slog.Info("rechecked curl GLSA findings against curl's own advisories", "cves", len(ids), "advisories", len(advisories))
 	return nil
 }
