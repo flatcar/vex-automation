@@ -103,7 +103,8 @@ Cloned GLSA mirror at ./glsa-data (3870 advisories, bffa9cc50d60)
 Each step is printed to stderr as it starts (plus a download progress meter on a terminal), and
 the result line goes to stdout. Gentoo's server can take a few minutes to answer.
 
-Running the same command again later updates the existing mirror instead of re-cloning:
+Running the same command again later updates the existing mirror instead of re-cloning.
+The update makes the directory match upstream exactly, so don't keep other files in it:
 
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data

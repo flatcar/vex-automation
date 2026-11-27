@@ -103,10 +103,12 @@ func (o *sharedOptions) matchOSV(ctx context.Context, docs ...sbom.Document) ([]
 	ctx, cancel := withTimeout(ctx, o.osvTimeout)
 	defer cancel()
 
+	seen := map[sbom.Package]bool{}
 	var modules []sbom.Package
 	for _, doc := range docs {
 		for _, module := range doc.Modules {
-			if !slices.Contains(modules, module) {
+			if !seen[module] {
+				seen[module] = true
 				modules = append(modules, module)
 			}
 		}
@@ -118,8 +120,12 @@ func (o *sharedOptions) matchOSV(ctx context.Context, docs ...sbom.Document) ([]
 
 	perDoc := make([][]vuln.Finding, len(docs))
 	for i, doc := range docs {
+		inDoc := map[sbom.Package]bool{}
+		for _, module := range doc.Modules {
+			inDoc[module] = true
+		}
 		for _, finding := range findings {
-			if slices.Contains(doc.Modules, finding.Package) {
+			if inDoc[finding.Package] {
 				perDoc[i] = append(perDoc[i], finding)
 			}
 		}

@@ -106,21 +106,22 @@ func TestSyncClonesThenUpdates(t *testing.T) {
 	}
 }
 
-// TestSyncKeepsUntrackedFiles checks that an update behaves like
-// "git reset --hard": files removed upstream disappear, tracked files are
-// restored, and files git never tracked are left alone.
-func TestSyncKeepsUntrackedFiles(t *testing.T) {
+// TestSyncMatchesUpstreamExactly checks that an update leaves exactly
+// upstream's files: files removed upstream disappear, changed files are
+// restored, and files git does not track (say, an advisory left behind by
+// an interrupted run) are removed too, so LoadDir never reads them.
+func TestSyncMatchesUpstreamExactly(t *testing.T) {
 	upstream := newTestUpstream(t)
 	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("Sync (clone): %v", err)
 	}
-	untracked := filepath.Join(dest, "notes", "local.txt")
+	untracked := filepath.Join(dest, "2099", "glsa-209901-01.xml")
 	if err := os.MkdirAll(filepath.Dir(untracked), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(untracked, []byte("mine"), 0o600); err != nil {
+	if err := os.WriteFile(untracked, []byte("<glsa/>"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dest, "glsa-202601-01.xml"), []byte("tampered"), 0o600); err != nil {
@@ -134,8 +135,8 @@ func TestSyncKeepsUntrackedFiles(t *testing.T) {
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("Sync (update): %v", err)
 	}
-	if got, err := os.ReadFile(untracked); err != nil || string(got) != "mine" {
-		t.Errorf("untracked file = %q, %v; want it kept", got, err)
+	if _, err := os.Stat(untracked); !os.IsNotExist(err) {
+		t.Errorf("untracked advisory still present (err = %v)", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(dest, "glsa-202601-01.xml")); string(got) != "<glsa/>" {
 		t.Errorf("tracked file = %q, want it restored", got)
@@ -676,6 +677,36 @@ func TestSyncRedactsCredentialsInHTTPErrors(t *testing.T) {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("error contains %q: %v", secret, err)
 		}
+	}
+}
+
+// TestSyncRedactsCredentialsInQuotedURLs covers url.Parse errors, which
+// repeat the URL Go-quoted, so a password with a '"' is escaped there.
+func TestSyncRedactsCredentialsInQuotedURLs(t *testing.T) {
+	_, err := Sync(context.Background(), filepath.Join(t.TempDir(), "g"), `https://user:pa"ss@example.invalid/glsa.git`, nil)
+	if err == nil {
+		t.Fatal("expected an error for an invalid URL")
+	}
+	for _, secret := range []string{`pa"ss`, `pa\"ss`, "user@"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error contains %q: %v", secret, err)
+		}
+	}
+}
+
+func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
+	root := t.TempDir()
+	gitObjects := filepath.Join(root, ".git", "objects")
+	if err := os.MkdirAll(gitObjects, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{".git/objects", "a/.GIT/x", "a/../b", "./a", "a//b"} {
+		if err := makeRoomForFiles(context.Background(), root, []string{path}); err == nil {
+			t.Errorf("makeRoomForFiles(%q) = nil, want an error", path)
+		}
+	}
+	if _, err := os.Stat(gitObjects); err != nil {
+		t.Errorf(".git/objects must survive: %v", err)
 	}
 }
 

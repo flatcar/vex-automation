@@ -21,7 +21,8 @@ func newSyncGLSACmd() *cobra.Command {
 		Long: `sync-glsa clones (on first run) or updates (on later runs) a local
 directory containing every upstream Gentoo GLSA *.xml advisory, so you don't
 have to source or keep one up to date by hand before running "generate
---glsa-dir".
+--glsa-dir". An update makes the directory match upstream exactly, so any
+other files in it are removed.
 
 It uses a built-in git implementation, so git does not need to be
 installed, and reads the same corpus Gentoo publishes at

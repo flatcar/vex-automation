@@ -8,14 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
-	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/term"
 )
@@ -153,7 +152,7 @@ func (s syncer) update(ctx context.Context, repo *git.Repository) error {
 	if err != nil {
 		return s.fail("updating the branch in "+s.dest, err)
 	}
-	if err := resetTrackedFiles(repo, upstream.Hash()); err != nil {
+	if err := resetToCommit(ctx, repo, upstream.Hash()); err != nil {
 		// Keep HEAD naming the commit whose files are still on disk.
 		return s.fail("updating "+s.dest+" to upstream HEAD", errors.Join(err, restoreBranch()))
 	}
@@ -182,10 +181,19 @@ func (s syncer) fail(action string, err error) error {
 	message := err.Error()
 	if raw, safe := s.repoURL, redact(s.repoURL); raw != safe {
 		message = strings.ReplaceAll(message, raw, safe)
+		message = strings.ReplaceAll(message, quoted(raw), quoted(safe))
 		message = strings.ReplaceAll(message, credentials(raw), "")
+		message = strings.ReplaceAll(message, quoted(credentials(raw)), "")
 	}
 	message = urlCredentials.ReplaceAllString(message, "://")
 	return fmt.Errorf("glsa sync: %s from %s: %s", action, redact(s.repoURL), message)
+}
+
+// quoted is text as Go's %q writes it inside the quotes, the form
+// url.Parse errors use to repeat a URL.
+func quoted(text string) string {
+	q := strconv.Quote(text)
+	return q[1 : len(q)-1]
 }
 
 func (s syncer) step(format string, args ...any) {
@@ -205,8 +213,7 @@ func (s syncer) terminal() io.Writer {
 
 // pointBranchAt moves the checked-out branch, or a detached HEAD, to
 // commit, and returns a function that moves it back. A hard reset moves
-// it too, but not for a branch with no commit yet (an interrupted clone),
-// and it may be skipped (resetTrackedFiles).
+// it too, but not for a branch with no commit yet (an interrupted clone).
 func pointBranchAt(repo *git.Repository, commit plumbing.Hash) (restore func() error, err error) {
 	head, err := repo.Storer.Reference(plumbing.HEAD)
 	if err != nil {
@@ -223,71 +230,65 @@ func pointBranchAt(repo *git.Repository, commit plumbing.Hash) (restore func() e
 	return restore, repo.Storer.SetReference(plumbing.NewHashReference(name, commit))
 }
 
-// resetTrackedFiles makes the checkout match commit, like "git reset
-// --hard": tracked files are restored or removed, untracked files are kept.
-// go-git's hard reset alone would also delete untracked files, so it is
-// limited to the paths tracked before or after the reset.
-func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
+// resetToCommit makes the checkout exactly match commit: changed files are
+// restored and every file upstream does not have is removed, untracked or
+// not, so a withdrawn advisory can never linger. Because the result does
+// not depend on what is on disk, a later run also repairs one that failed
+// or was killed halfway.
+func resetToCommit(ctx context.Context, repo *git.Repository, commit plumbing.Hash) error {
 	worktree, err := repo.Worktree()
 	if err != nil {
 		return err
 	}
-	oldIndex, err := repo.Storer.Index()
+	files, err := treePaths(repo, commit)
 	if err != nil {
 		return err
 	}
-	trackedBefore := indexPaths(oldIndex)
-	trackedAfter, err := treePaths(repo, commit)
-	if err != nil {
+	if err := makeRoomForFiles(ctx, worktree.Filesystem.Root(), files); err != nil {
 		return err
 	}
-	if err := makeRoomForFiles(worktree.Filesystem.Root(), trackedAfter); err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	tracked := slices.Concat(trackedBefore, trackedAfter)
-	if len(tracked) == 0 {
-		return nil // go-git reads an empty list as "every file"
-	}
-	if err := worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked}); err != nil {
-		return errors.Join(err, keepTrackingAttemptedFiles(repo, oldIndex))
-	}
-	return nil
+	return worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset})
 }
 
-// keepTrackingAttemptedFiles runs after a failed reset. go-git has already
-// written the new index, and may have created some of its files. Tracking
-// both the old and the new entries lets a retry remove every file upstream
-// no longer has, whether it was there before or created by the failed try.
-func keepTrackingAttemptedFiles(repo *git.Repository, oldIndex *index.Index) error {
-	newIndex, err := repo.Storer.Index()
-	if err != nil {
-		return err
-	}
-	for _, entry := range newIndex.Entries {
-		if _, err := oldIndex.Entry(entry.Name); err != nil {
-			oldIndex.Entries = append(oldIndex.Entries, entry)
-		}
-	}
-	return repo.Storer.SetIndex(oldIndex)
-}
-
-// makeRoomForFiles clears what blocks the files upstream now tracks, as
-// git does: a file or symlink where a directory must be is removed (a
-// symlink is never followed), and a directory where a file must be is
-// deleted. go-git would fail or write through the symlink. os.Root keeps
-// all of this inside root.
-func makeRoomForFiles(root string, files []string) error {
+// makeRoomForFiles clears what blocks the files upstream now has, as git
+// does: a file or symlink where a directory must be is removed (a symlink
+// is never followed), and a directory where a file must be is deleted.
+// go-git would fail or write through the symlink. os.Root keeps all of
+// this inside root.
+func makeRoomForFiles(ctx context.Context, root string, files []string) error {
 	dir, err := os.OpenRoot(root)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = dir.Close() }()
 	for _, file := range files {
-		if err := makeRoomFor(dir, strings.Split(file, "/")); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		parts := strings.Split(file, "/")
+		if !isSafePath(parts) {
+			return fmt.Errorf("upstream has an unsafe path %q", file)
+		}
+		if err := makeRoomFor(dir, parts); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// isSafePath rejects paths git itself would refuse to check out: empty,
+// "." or ".." parts, and anything inside .git. Checking first keeps a
+// crafted upstream from getting the mirror's own git data deleted.
+func isSafePath(parts []string) bool {
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".git") {
+			return false
+		}
+	}
+	return true
 }
 
 // makeRoomFor checks the path to one file from the top down, so it never
@@ -308,15 +309,6 @@ func makeRoomFor(dir *os.Root, parts []string) error {
 		}
 	}
 	return nil
-}
-
-// indexPaths lists the files an index tracks.
-func indexPaths(idx *index.Index) []string {
-	paths := make([]string, 0, len(idx.Entries))
-	for _, entry := range idx.Entries {
-		paths = append(paths, entry.Name)
-	}
-	return paths
 }
 
 // treePaths lists the files in commit.
