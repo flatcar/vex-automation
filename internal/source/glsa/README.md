@@ -15,8 +15,9 @@ a directory that has other files in it, and refuses upstream paths git itself wo
 (such as anything under `.git`). An update first says how many local changes it
 discards, so a modified mirror shows up in the log.
 
-Re-pointing `--repo` only changes origin's URL, like `git remote set-url`, and git's
-`insteadOf` rewrite rules are not applied. A local repository path still needs `git`
+Re-pointing `--repo` only changes origin's first URL, like `git remote set-url`, and git's
+`insteadOf` rewrite rules are not applied. While `--repo` stays the same, `.git/config` is
+not touched. A local repository path still needs `git`
 installed, because go-git reads local repositories through `git upload-pack`.
 
 ## Parsing

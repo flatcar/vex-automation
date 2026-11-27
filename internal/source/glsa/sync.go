@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -197,11 +198,12 @@ func (s syncer) terminal() io.Writer {
 	return nil
 }
 
-// setOrigin points the origin remote at url, like "git remote set-url",
-// keeping any other settings it has, or adds it if missing. It writes the
-// config file as read, with only that line changed, because go-git's own
-// SetConfig rewrites remotes: it turns a pushurl into an extra url, and
-// keeps the old url when a url.*.insteadOf rule matched it.
+// setOrigin points the origin remote at url, like "git remote set-url":
+// only its first url changes, and the config file is left alone if that
+// already is url. It writes the config file as read, with only that line
+// changed, because go-git's own SetConfig rewrites remotes: it turns a
+// pushurl into an extra url, and keeps the old url when a
+// url.*.insteadOf rule matched it.
 func setOrigin(repo *git.Repository, url string) error {
 	storage, ok := repo.Storer.(*filesystem.Storage)
 	if !ok {
@@ -211,7 +213,16 @@ func setOrigin(repo *git.Repository, url string) error {
 	if err != nil {
 		return err
 	}
-	cfg.Raw.Section("remote").Subsection("origin").SetOption("url", url)
+	origin := cfg.Raw.Section("remote").Subsection("origin")
+	first := slices.IndexFunc(origin.Options, func(o *format.Option) bool { return o.IsKey("url") })
+	switch {
+	case first < 0:
+		origin.AddOption("url", url)
+	case origin.Options[first].Value == url:
+		return nil
+	default:
+		origin.Options[first].Value = url
+	}
 	var raw bytes.Buffer
 	if err := format.NewEncoder(&raw).Encode(cfg.Raw); err != nil {
 		return err

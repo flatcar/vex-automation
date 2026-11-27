@@ -658,8 +658,9 @@ func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
 	}
 }
 
-// TestSyncKeepsOriginSettings checks that an update only changes origin's
-// URL, like "git remote set-url", and keeps its other settings.
+// TestSyncKeepsOriginSettings checks that an update leaves the config file
+// alone while --repo is unchanged, and otherwise only changes origin's
+// first URL, like "git remote set-url".
 func TestSyncKeepsOriginSettings(t *testing.T) {
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
@@ -671,24 +672,36 @@ func TestSyncKeepsOriginSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := "[remote \"origin\"]\n\ttagopt = --no-tags\n\tpushurl = https://push.example/glsa.git\n"
-	if err := os.WriteFile(configPath, append(gitConfig, settings...), 0o644); err != nil {
+	settings := "[remote \"origin\"]\n\ttagopt = --no-tags\n\turl = https://second.example/glsa.git\n" +
+		"\tpushurl = https://push.example/glsa.git\n[include]\n\tpath = extra.conf\n[core]\n\tfilemode = false\n"
+	gitConfig = append(gitConfig, settings...)
+	if err := os.WriteFile(configPath, gitConfig, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
 		t.Fatalf("Sync (update): %v", err)
 	}
-	gitConfig, err = os.ReadFile(configPath)
+	if unchanged, err := os.ReadFile(configPath); err != nil || !bytes.Equal(unchanged, gitConfig) {
+		t.Errorf("config changed although --repo did not (%v):\n%s", err, unchanged)
+	}
+
+	moved := newTestUpstream(t)
+	if _, err := Sync(context.Background(), dest, moved, nil); err != nil {
+		t.Fatalf("Sync (new repo): %v", err)
+	}
+	updated, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(gitConfig), "tagopt = --no-tags") {
-		t.Errorf("origin lost its tagopt setting:\n%s", gitConfig)
+	for _, want := range []string{"url = " + moved, "tagopt = --no-tags", "url = https://second.example/glsa.git",
+		"pushurl = https://push.example/glsa.git"} {
+		if !strings.Contains(string(updated), want) {
+			t.Errorf("config lacks %q:\n%s", want, updated)
+		}
 	}
-	if !strings.Contains(string(gitConfig), "pushurl = https://push.example/glsa.git") ||
-		strings.Count(string(gitConfig), "\turl = ") != 1 {
-		t.Errorf("origin should keep one url and its separate pushurl:\n%s", gitConfig)
+	if strings.Contains(string(updated), "url = "+upstream+"\n") {
+		t.Errorf("config still points at the old repository:\n%s", updated)
 	}
 }
 
