@@ -333,11 +333,12 @@ func makeRoomForFiles(ctx context.Context, root string, files []string) error {
 }
 
 // isSafePath rejects paths git itself would refuse to check out: empty,
-// "." or ".." parts, and anything inside .git. Checking first keeps a
-// crafted upstream from getting the mirror's own git data deleted.
+// "." or ".." parts, anything inside .git, and backslashes, which Windows
+// reads as separators. Checking first keeps a crafted upstream from getting
+// the mirror's own git data deleted.
 func isSafePath(parts []string) bool {
 	for _, part := range parts {
-		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".git") {
+		if part == "" || part == "." || part == ".." || strings.EqualFold(part, ".git") || strings.Contains(part, `\`) {
 			return false
 		}
 	}

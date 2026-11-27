@@ -648,7 +648,7 @@ func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
 	if err := os.MkdirAll(gitObjects, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{".git/objects", "a/.GIT/x", "a/../b", "./a", "a//b"} {
+	for _, path := range []string{".git/objects", "a/.GIT/x", "a/../b", "./a", "a//b", `a\objects`} {
 		if err := makeRoomForFiles(context.Background(), root, []string{path}); err == nil {
 			t.Errorf("makeRoomForFiles(%q) = nil, want an error", path)
 		}

@@ -8,12 +8,12 @@ copy (`Sync`), read it (`LoadDir`) and check packages against it (`Match`).
 `Sync` clones Gentoo's GLSA repository into a directory, or updates an existing clone,
 using go-git, so no `git` binary is needed for an https URL. It fetches only the latest
 commit and makes the checkout match it exactly: edits are discarded and every file upstream
-does not have is removed, untracked or not, so a withdrawn advisory can never linger and a
-run that failed or was killed halfway is repaired by the next one. The result records the
-exact upstream commit the advisories came from. It refuses to clone into a directory that
-has other files in it, and refuses upstream paths git itself would reject (such as
-anything under `.git`). An update first says how many local changes it discards, so a
-modified mirror shows up in the log.
+does not have is removed (untracked and ignored ones too), so a withdrawn advisory can
+never linger and a run that failed or was killed halfway is repaired by the next one. The
+result records the exact upstream commit the advisories came from. It refuses to clone into
+a directory that has other files in it, and refuses upstream paths git itself would reject
+(such as anything under `.git`). An update first says how many local changes it
+discards, so a modified mirror shows up in the log.
 
 Re-pointing `--repo` only changes origin's URL, like `git remote set-url`, and git's
 `insteadOf` rewrite rules are not applied. A local repository path still needs `git`
