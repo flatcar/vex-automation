@@ -15,6 +15,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/term"
 )
@@ -200,14 +201,19 @@ func (s syncer) terminal() io.Writer {
 	return nil
 }
 
-// pointBranchAt moves the checked-out branch to commit. A hard reset does
-// this too, except for a branch with no commit yet (an interrupted clone).
+// pointBranchAt moves the checked-out branch, or a detached HEAD, to
+// commit. A hard reset does this too, but not for a branch with no commit
+// yet (an interrupted clone), and it may be skipped (resetTrackedFiles).
 func pointBranchAt(repo *git.Repository, commit plumbing.Hash) error {
 	head, err := repo.Storer.Reference(plumbing.HEAD)
-	if err != nil || head.Type() != plumbing.SymbolicReference {
+	if err != nil {
 		return err
 	}
-	return repo.Storer.SetReference(plumbing.NewHashReference(head.Target(), commit))
+	name := plumbing.HEAD
+	if head.Type() == plumbing.SymbolicReference {
+		name = head.Target()
+	}
+	return repo.Storer.SetReference(plumbing.NewHashReference(name, commit))
 }
 
 // resetTrackedFiles makes the checkout match commit, like "git reset
@@ -219,10 +225,11 @@ func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
 	if err != nil {
 		return err
 	}
-	trackedBefore, err := indexPaths(repo)
+	oldIndex, err := repo.Storer.Index()
 	if err != nil {
 		return err
 	}
+	trackedBefore := indexPaths(oldIndex)
 	trackedAfter, err := treePaths(repo, commit)
 	if err != nil {
 		return err
@@ -234,7 +241,12 @@ func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
 	if len(tracked) == 0 {
 		return nil // go-git reads an empty list as "every file"
 	}
-	return worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked})
+	if err := worktree.Reset(&git.ResetOptions{Commit: commit, Mode: git.HardReset, Files: tracked}); err != nil {
+		// go-git writes the new index before the files. Restoring the old
+		// one lets a retry still remove the files upstream deleted.
+		return errors.Join(err, repo.Storer.SetIndex(oldIndex))
+	}
+	return nil
 }
 
 // removeDirectoriesInTheWay deletes directories where a file must go, as
@@ -258,17 +270,13 @@ func removeDirectoriesInTheWay(root string, files []string) error {
 	return nil
 }
 
-// indexPaths lists the files repo's index tracks.
-func indexPaths(repo *git.Repository) ([]string, error) {
-	idx, err := repo.Storer.Index()
-	if err != nil {
-		return nil, err
-	}
+// indexPaths lists the files an index tracks.
+func indexPaths(idx *index.Index) []string {
 	paths := make([]string, 0, len(idx.Entries))
 	for _, entry := range idx.Entries {
 		paths = append(paths, entry.Name)
 	}
-	return paths, nil
+	return paths
 }
 
 // treePaths lists the files in commit.

@@ -247,6 +247,45 @@ func TestSyncStaysInsideDest(t *testing.T) {
 	}
 }
 
+// TestSyncRecoversFromFailedReset checks that a retry after a failed
+// update still removes advisories that upstream deleted, so a withdrawn
+// GLSA can't survive as an untracked file.
+func TestSyncRecoversFromFailedReset(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	upstream := newTestUpstream(t)
+	addUpstreamFile(t, upstream, "glsa-202601-02.xml")
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if err := os.Remove(filepath.Join(upstream, "glsa-202601-02.xml")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "withdraw glsa-202601-02.xml")
+
+	// A read-only checkout (with a writable .git) makes the reset fail.
+	if err := os.Chmod(dest, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Sync(context.Background(), dest, upstream, nil)
+	if chmodErr := os.Chmod(dest, 0o755); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	if err == nil {
+		t.Fatal("expected the update of a read-only checkout to fail")
+	}
+
+	res, err := Sync(context.Background(), dest, upstream, nil)
+	if err != nil {
+		t.Fatalf("Sync (retry): %v", err)
+	}
+	if res.FileCount != 1 {
+		t.Errorf("FileCount = %d after retry, want 1 (withdrawn GLSA must be removed)", res.FileCount)
+	}
+}
+
 // TestSyncReportsUpdateErrors checks that a failing fetch during an
 // update is reported as such.
 func TestSyncReportsUpdateErrors(t *testing.T) {
