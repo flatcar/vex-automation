@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-git/go-billy/v5/util"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -249,7 +248,31 @@ func setOrigin(repo *git.Repository, url string) error {
 	if err := format.NewEncoder(&raw).Encode(cfg.Raw); err != nil {
 		return err
 	}
-	return util.WriteFile(storage.Filesystem(), "config", raw.Bytes(), 0o644)
+	return replaceFile(filepath.Join(storage.Filesystem().Root(), "config"), raw.Bytes())
+}
+
+// replaceFile swaps in new contents for path all at once: it writes a
+// temporary file next to it and renames that over path only when the
+// write fully succeeded, so a full disk can't leave path half-written.
+func replaceFile(path string, contents []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.Write(contents)
+	if err == nil {
+		err = tmp.Chmod(0o644)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 // countLocalChanges counts the files that differ from the checked-out

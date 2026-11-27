@@ -844,6 +844,32 @@ func TestSyncIgnoresURLRewritesOnRepoChange(t *testing.T) {
 	}
 }
 
+func TestReplaceFile(t *testing.T) {
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config")
+	if err := os.WriteFile(config, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(config, []byte("new")); err != nil {
+		t.Fatalf("replaceFile: %v", err)
+	}
+	if got, _ := os.ReadFile(config); string(got) != "new" {
+		t.Errorf("config = %q, want %q", got, "new")
+	}
+
+	// A non-empty directory can't be renamed over, so the swap fails.
+	blocked := filepath.Join(dir, "blocked")
+	if err := os.MkdirAll(filepath.Join(blocked, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceFile(blocked, []byte("new")); err == nil {
+		t.Error("expected an error replacing a non-empty directory")
+	}
+	if leftovers, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(leftovers) != 0 {
+		t.Errorf("temporary files left behind: %v", leftovers)
+	}
+}
+
 func TestSyncReportsDiscardedLocalChanges(t *testing.T) {
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
