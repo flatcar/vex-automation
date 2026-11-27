@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,8 @@ import (
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/transport"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"golang.org/x/term"
 )
 
@@ -49,9 +52,11 @@ type SyncResult struct {
 // repoURL (a local path still uses git's upload-pack), and the result
 // records exactly which upstream commit the advisories come from.
 //
-// Updating resets the checkout like "git reset --hard", discarding edits
-// to tracked files, so dest should be a dedicated mirror. A non-empty directory that is not a clone is
-// left untouched.
+// Updating makes dest match upstream exactly, removing local edits and
+// stray files (and saying how many), so dest should be a dedicated mirror.
+// A non-empty directory that is not a clone is left untouched. Credentials
+// in an http(s) repoURL are sent with each request but never stored in
+// dest/.git/config.
 //
 // If progress is not nil, Sync reports each step to it, plus a download
 // progress meter if progress is a terminal.
@@ -68,7 +73,8 @@ func Sync(ctx context.Context, dest, repoURL string, progress io.Writer) (SyncRe
 		defer cancel()
 	}
 
-	s := syncer{dest: dest, repoURL: repoURL, progress: progress}
+	remoteURL, auth := splitCredentials(repoURL)
+	s := syncer{dest: dest, repoURL: repoURL, remoteURL: remoteURL, auth: auth, progress: progress}
 	_, err := os.Stat(filepath.Join(dest, ".git"))
 	switch {
 	case os.IsNotExist(err):
@@ -95,10 +101,12 @@ func Sync(ctx context.Context, dest, repoURL string, progress io.Writer) (SyncRe
 	return s.summarize(repo, false, oldCommit)
 }
 
-// syncer holds what one Sync call works on.
+// syncer holds what one Sync call works on. remoteURL is repoURL without
+// http(s) credentials, which travel in auth instead.
 type syncer struct {
-	dest, repoURL string
-	progress      io.Writer
+	dest, repoURL, remoteURL string
+	auth                     transport.AuthMethod
+	progress                 io.Writer
 }
 
 func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
@@ -110,7 +118,8 @@ func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
 	}
 	s.step("Cloning %s into %s...", redact(s.repoURL), s.dest)
 	repo, err := git.PlainCloneContext(ctx, s.dest, false, &git.CloneOptions{
-		URL:          s.repoURL,
+		URL:          s.remoteURL,
+		Auth:         s.auth,
 		Depth:        1,
 		SingleBranch: true,
 		Progress:     s.terminal(),
@@ -123,18 +132,23 @@ func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
 
 // update makes dest exactly match the latest upstream commit. It fetches
 // and resets instead of pulling, since a read-only mirror never needs a
-// merge. Recreating the origin remote makes a changed --repo take effect.
+// merge. Pointing origin at the URL makes a changed --repo take effect.
 func (s syncer) update(ctx context.Context, repo *git.Repository) error {
-	if err := repo.DeleteRemote("origin"); err != nil && !errors.Is(err, git.ErrRemoteNotFound) {
-		return s.fail("removing old origin in "+s.dest, err)
-	}
-	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{s.repoURL}}); err != nil {
+	if err := setOrigin(repo, s.remoteURL); err != nil {
 		return s.fail("pointing origin at the repository in "+s.dest, err)
+	}
+	changes, err := countLocalChanges(repo)
+	if err != nil {
+		return s.fail("checking for local changes in "+s.dest, err)
+	}
+	if changes > 0 {
+		s.step("Discarding %d local change(s) in %s...", changes, s.dest)
 	}
 
 	s.step("Fetching updates from %s into %s...", redact(s.repoURL), s.dest)
-	err := repo.FetchContext(ctx, &git.FetchOptions{
+	err = repo.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
+		Auth:       s.auth,
 		RefSpecs:   []config.RefSpec{config.RefSpec("+HEAD:" + fetchedHead)},
 		Depth:      1,
 		Force:      true,
@@ -209,6 +223,42 @@ func (s syncer) terminal() io.Writer {
 		return file
 	}
 	return nil
+}
+
+// setOrigin points the origin remote at url, like "git remote set-url",
+// keeping any other settings it has, or adds it if missing.
+func setOrigin(repo *git.Repository, url string) error {
+	cfg, err := repo.Config()
+	if err != nil {
+		return err
+	}
+	origin, ok := cfg.Remotes["origin"]
+	if !ok {
+		origin = &config.RemoteConfig{Name: "origin"}
+		cfg.Remotes["origin"] = origin
+	}
+	origin.URLs = []string{url}
+	return repo.SetConfig(cfg)
+}
+
+// countLocalChanges counts the files that differ from the checked-out
+// commit: edited, deleted or added, untracked ones included.
+func countLocalChanges(repo *git.Repository) (int, error) {
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return 0, err
+	}
+	status, err := worktree.Status()
+	if err != nil {
+		return 0, err
+	}
+	changes := 0
+	for _, file := range status {
+		if file.Staging != git.Unmodified || file.Worktree != git.Unmodified {
+			changes++
+		}
+	}
+	return changes, nil
 }
 
 // pointBranchAt moves the checked-out branch, or a detached HEAD, to
@@ -344,6 +394,21 @@ func headCommit(repo *git.Repository) (string, error) {
 		return "", fmt.Errorf("HEAD %s: %w", head.Hash(), err)
 	}
 	return head.Hash().String(), nil
+}
+
+// splitCredentials moves the "user:password@" part of an http(s) repoURL
+// into basic auth, so it is sent to the server but not written to
+// .git/config, where a cached or uploaded mirror would expose it. Other
+// URLs, like ssh's "git@host:path", are returned unchanged.
+func splitCredentials(repoURL string) (string, transport.AuthMethod) {
+	parsed, err := url.Parse(repoURL)
+	if err != nil || parsed.User == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return repoURL, nil
+	}
+	password, _ := parsed.User.Password()
+	auth := &githttp.BasicAuth{Username: parsed.User.Username(), Password: password}
+	parsed.User = nil
+	return parsed.String(), auth
 }
 
 // redact removes a "user:password@" part from repoURL before it is shown.

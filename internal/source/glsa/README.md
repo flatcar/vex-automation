@@ -12,8 +12,14 @@ does not have is removed, untracked or not, so a withdrawn advisory can never li
 run that failed or was killed halfway is repaired by the next one. The result records the
 exact upstream commit the advisories came from. It refuses to clone into a directory that
 has other files in it, and refuses upstream paths git itself would reject (such as
-anything under `.git`).
-Credentials in a repository URL never appear in errors or progress output. A local
+anything under `.git`). An update first says how many local changes it discards, so a
+modified mirror shows up in the log.
+
+Credentials in an http(s) repository URL are sent as basic auth but never written to
+`.git/config`, and never appear in errors or progress output. Re-pointing `--repo` only
+changes origin's URL, like `git remote set-url`. Being go-git, ssh URLs authenticate
+through ssh-agent and `known_hosts` only; git credential helpers, `GIT_SSH_COMMAND` and
+`insteadOf` rules are not used (clone with `git` yourself if you need them). A local
 repository path still needs `git` installed, because go-git reads local repositories
 through `git upload-pack`.
 

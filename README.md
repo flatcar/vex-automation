@@ -104,7 +104,8 @@ Each step is printed to stderr as it starts (plus a download progress meter on a
 the result line goes to stdout. Gentoo's server can take a few minutes to answer.
 
 Running the same command again later updates the existing mirror instead of re-cloning.
-The update makes the directory match upstream exactly, so don't keep other files in it:
+The update makes the directory match upstream exactly, so don't keep other files in it;
+if it finds local changes it says how many it discards:
 
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data
@@ -123,7 +124,9 @@ Useful flags:
 - `--repo` – sync from a different Git remote instead of Gentoo's canonical
   `anongit.gentoo.org/git/data/glsa.git`. Re-running with a different `--repo` against an
   existing `--dest` re-points it at the new remote. A local repository path also works, but
-  needs git installed.
+  needs git installed. Credentials in an https URL are used but not stored in the mirror's
+  `.git/config`. ssh URLs authenticate through ssh-agent and `known_hosts` only; if you
+  need git credential helpers or a custom ssh command, clone with git yourself (below).
 - `--timeout` – cap how long the clone/update is allowed to run before giving up (default `5m`).
 
 You can also skip `sync-glsa` and clone the repository yourself with

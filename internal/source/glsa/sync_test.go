@@ -710,6 +710,118 @@ func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
 	}
 }
 
+// TestSyncKeepsCredentialsOutOfConfig checks that credentials in --repo
+// reach the server but are never written to .git/config, where a cached
+// or uploaded mirror would expose them.
+func TestSyncKeepsCredentialsOutOfConfig(t *testing.T) {
+	var gotUser, gotPassword string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPassword, _ = r.BasicAuth()
+		http.Error(w, "broken", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+
+	repoURL := strings.Replace(srv.URL, "://", "://bot:s3cret@", 1) + "/glsa.git"
+	if _, err := Sync(context.Background(), dest, repoURL, nil); err == nil {
+		t.Fatal("expected an error from a failing server")
+	}
+	if gotUser != "bot" || gotPassword != "s3cret" {
+		t.Errorf("server got credentials %q:%q, want bot:s3cret", gotUser, gotPassword)
+	}
+	gitConfig, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(gitConfig), "s3cret") || !strings.Contains(string(gitConfig), srv.URL+"/glsa.git") {
+		t.Errorf(".git/config should name %s/glsa.git without credentials:\n%s", srv.URL, gitConfig)
+	}
+}
+
+func TestSplitCredentials(t *testing.T) {
+	for repoURL, want := range map[string]string{
+		"https://bot:s3cret@example.com/glsa.git": "https://example.com/glsa.git",
+		"http://token@example.com/glsa.git":       "http://example.com/glsa.git",
+		"https://example.com/glsa.git":            "https://example.com/glsa.git",
+		"ssh://git@example.com/glsa.git":          "ssh://git@example.com/glsa.git",
+		"git@example.com:glsa.git":                "git@example.com:glsa.git",
+		"/srv/glsa":                               "/srv/glsa",
+	} {
+		got, auth := splitCredentials(repoURL)
+		if got != want {
+			t.Errorf("splitCredentials(%q) URL = %q, want %q", repoURL, got, want)
+		}
+		if (auth != nil) != (got != repoURL) {
+			t.Errorf("splitCredentials(%q) auth = %v, want auth only when credentials were split off", repoURL, auth)
+		}
+	}
+}
+
+// TestSyncKeepsOriginSettings checks that an update only changes origin's
+// URL, like "git remote set-url", and keeps its other settings.
+func TestSyncKeepsOriginSettings(t *testing.T) {
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	repo, err := git.PlainOpen(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Raw.Section("remote").Subsection("origin").SetOption("tagopt", "--no-tags")
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	gitConfig, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gitConfig), "tagopt = --no-tags") {
+		t.Errorf("origin lost its tagopt setting:\n%s", gitConfig)
+	}
+}
+
+func TestSyncReportsDiscardedLocalChanges(t *testing.T) {
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	for name, content := range map[string]string{"glsa-202601-01.xml": "tampered", "glsa-209901-01.xml": "<glsa/>"} {
+		if err := os.WriteFile(filepath.Join(dest, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var progress bytes.Buffer
+	if _, err := Sync(context.Background(), dest, upstream, &progress); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if want := "Discarding 2 local change(s) in " + dest; !strings.Contains(progress.String(), want) {
+		t.Errorf("progress = %q, want it to contain %q", progress.String(), want)
+	}
+	progress.Reset()
+	if _, err := Sync(context.Background(), dest, upstream, &progress); err != nil {
+		t.Fatalf("Sync (clean update): %v", err)
+	}
+	if strings.Contains(progress.String(), "Discarding") {
+		t.Errorf("a clean mirror should report no discarded changes, got %q", progress.String())
+	}
+}
+
 func TestDownloadProgressOnlyForTerminals(t *testing.T) {
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
