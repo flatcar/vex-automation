@@ -25,7 +25,7 @@ func RunGLSA(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
 	// versions (slots) of one package.
 	installed := map[string][]sbom.Package{}
 	for _, pkg := range pkgs {
-		installed[pkg.CategoryName()] = append(installed[pkg.CategoryName()], pkg)
+		installed[pkg.FullName()] = append(installed[pkg.FullName()], pkg)
 	}
 
 	var findings []Finding
@@ -42,7 +42,7 @@ func RunGLSA(pkgs []sbom.Package, glsas []glsa.GLSA, arch string) []Finding {
 				status, note := evaluatePackage(affected.CategoryName, pkg.Version, affected)
 				if status == StatusUnderInvestigation {
 					slog.Info("cannot evaluate GLSA ranges, reporting as under investigation",
-						"package", pkg.CategoryName(), "version", pkg.Version, "glsa", advisory.ID, "reason", note)
+						"package", pkg.FullName(), "version", pkg.Version, "glsa", advisory.ID, "reason", note)
 				}
 				for _, id := range ids {
 					findings = append(findings, Finding{

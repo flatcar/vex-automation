@@ -9,20 +9,20 @@ import (
 	"github.com/flatcar/vex-automation/internal/sbom"
 )
 
-// osvEcosystems maps SBOM purl types to OSV.dev ecosystem names.
-var osvEcosystems = map[string]string{
-	"golang": "Go",
-	"cargo":  "crates.io",
+// osvEcosystems maps SBOM ecosystems to OSV.dev's names for them.
+var osvEcosystems = map[sbom.Ecosystem]string{
+	sbom.Golang: "Go",
+	sbom.Cargo:  "crates.io",
 }
 
-// RunOSV asks OSV.dev about every golang/cargo package. OSV.dev only
+// RunOSV asks OSV.dev about every golang/cargo package (sbom.Document.Modules). OSV.dev only
 // returns vulnerabilities that affect the exact version asked about, so
 // every finding is affected. A fixed vulnerability therefore produces no
 // finding at all; package diff treats that silence as a fix.
 func RunOSV(ctx context.Context, pkgs []sbom.Package, client *osv.Client) ([]Finding, error) {
 	queries := make([]osv.Package, len(pkgs))
 	for i, pkg := range pkgs {
-		queries[i] = osv.Package{Ecosystem: osvEcosystems[pkg.Category], Name: pkg.Name, Version: pkg.Version}
+		queries[i] = osv.Package{Ecosystem: osvEcosystems[pkg.Ecosystem], Name: pkg.Name, Version: pkg.Version}
 	}
 	results, err := client.Query(ctx, queries)
 	if err != nil {

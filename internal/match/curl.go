@@ -71,5 +71,5 @@ func ApplyCurlAdvisories(findings []Finding, advisories map[string]osv.Vulnerabi
 }
 
 func isCurlGLSAAffected(finding Finding) bool {
-	return finding.Source == SourceGLSA && finding.Status == StatusAffected && finding.Package.CategoryName() == curlPackage
+	return finding.Source == SourceGLSA && finding.Status == StatusAffected && finding.Package.FullName() == curlPackage
 }

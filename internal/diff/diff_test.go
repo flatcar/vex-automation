@@ -13,11 +13,11 @@ import (
 
 func ebuild(catName, version string) sbom.Package {
 	cat, name, _ := strings.Cut(catName, "/")
-	return sbom.Package{Category: cat, Name: name, Version: version, PURL: "pkg:ebuild/" + catName + "@" + version}
+	return sbom.Package{Ecosystem: sbom.Ebuild, Category: cat, Name: name, Version: version, PURL: "pkg:ebuild/" + catName + "@" + version}
 }
 
 func gomod(module, version string) sbom.Package {
-	return sbom.Package{Category: "golang", Name: module, Version: version, PURL: "pkg:golang/" + module + "@" + version}
+	return sbom.Package{Ecosystem: sbom.Golang, Name: module, Version: version, PURL: "pkg:golang/" + module + "@" + version}
 }
 
 func glsaFinding(id string, pkg sbom.Package, status match.Status, ref string) match.Finding {
@@ -31,10 +31,10 @@ func osvFinding(id string, pkg sbom.Package, ref string) match.Finding {
 func side(pkgs []sbom.Package, findings ...match.Finding) Side {
 	var doc sbom.Document
 	for _, p := range pkgs {
-		if p.Category == "golang" || p.Category == "cargo" {
-			doc.OSVPackages = append(doc.OSVPackages, p)
+		if p.Ecosystem == sbom.Ebuild {
+			doc.Ebuilds = append(doc.Ebuilds, p)
 		} else {
-			doc.Packages = append(doc.Packages, p)
+			doc.Modules = append(doc.Modules, p)
 		}
 	}
 	return Side{Doc: doc, Findings: findings}

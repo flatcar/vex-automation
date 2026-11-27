@@ -1,6 +1,6 @@
 // Package match decides, for each installed package, which known
 // vulnerabilities affect it: ebuild packages against Gentoo's GLSAs
-// (RunGLSA), golang/cargo packages against OSV.dev (RunOSV).
+// (RunGLSA), golang/cargo modules against OSV.dev (RunOSV).
 //
 // It sits in the middle of the pipeline: its input is the packages from
 // package sbom and the advisories from packages glsa and osv; its output,
@@ -79,7 +79,8 @@ func sortFindings(findings []Finding) {
 	slices.SortStableFunc(findings, func(a, b Finding) int {
 		return cmp.Or(
 			cmp.Compare(a.CVE, b.CVE),
-			cmp.Compare(a.Package.CategoryName(), b.Package.CategoryName()),
+			cmp.Compare(a.Package.FullName(), b.Package.FullName()),
+			cmp.Compare(a.Package.Ecosystem, b.Package.Ecosystem),
 			cmp.Compare(a.Package.Version, b.Package.Version),
 			cmp.Compare(a.Source, b.Source),
 			cmp.Compare(a.RefID, b.RefID),

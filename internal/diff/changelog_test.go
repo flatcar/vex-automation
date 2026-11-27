@@ -7,7 +7,7 @@ import (
 )
 
 func TestFormatChangelog(t *testing.T) {
-	fixed := func(id, pkg, eco string) Entry {
+	fixed := func(id, pkg string, eco sbom.Ecosystem) Entry {
 		return Entry{ID: id, Bucket: BucketFixed, Package: pkg, Ecosystem: eco}
 	}
 	res := Result{Entries: []Entry{
@@ -47,7 +47,7 @@ func TestFormatChangelogEmpty(t *testing.T) {
 }
 
 func TestFormatChangelogSeparatesEcosystemsSharingAName(t *testing.T) {
-	fixed := func(id, pkg, eco string) Entry {
+	fixed := func(id, pkg string, eco sbom.Ecosystem) Entry {
 		return Entry{ID: id, Bucket: BucketFixed, Package: pkg, Ecosystem: eco}
 	}
 	res := Result{Entries: []Entry{

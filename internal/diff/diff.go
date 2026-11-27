@@ -118,14 +118,13 @@ type Entry struct {
 	Bucket Bucket `json:"bucket"`
 	// Package is "category/name" for ebuilds and the module path for
 	// golang/cargo packages.
-	Package string `json:"package"`
-	// Ecosystem is "ebuild", "golang" or "cargo".
-	Ecosystem  string   `json:"ecosystem"`
-	Old        SideInfo `json:"old"`
-	New        SideInfo `json:"new"`
-	Sources    []string `json:"sources"`
-	Advisories []string `json:"advisories"`
-	Notes      []string `json:"notes"`
+	Package    string         `json:"package"`
+	Ecosystem  sbom.Ecosystem `json:"ecosystem"`
+	Old        SideInfo       `json:"old"`
+	New        SideInfo       `json:"new"`
+	Sources    []string       `json:"sources"`
+	Advisories []string       `json:"advisories"`
+	Notes      []string       `json:"notes"`
 }
 
 // SideInfo describes a key on one side of the diff.
@@ -151,28 +150,37 @@ type Skipped struct {
 	Reason  string `json:"reason"`
 	// Ecosystem and Module identify a golang/cargo module skipped only
 	// because its version can't be queried (see sbom.SkippedPackage).
-	Ecosystem string `json:"ecosystem,omitempty"`
-	Module    string `json:"module,omitempty"`
+	Ecosystem sbom.Ecosystem `json:"ecosystem,omitempty"`
+	Module    string         `json:"module,omitempty"`
 }
 
 // key identifies one entry: a vulnerability in a package.
 type key struct {
-	id          string
-	packageName string // sbom.Package.CategoryName()
+	id  string
+	pkg packageID
+}
+
+// packageID identifies a package regardless of its version. The ecosystem
+// is part of it because packages of different ecosystems may share a name.
+type packageID struct {
+	ecosystem sbom.Ecosystem
+	name      string // sbom.Package.FullName()
+}
+
+func idOf(pkg sbom.Package) packageID {
+	return packageID{ecosystem: pkg.Ecosystem, name: pkg.FullName()}
 }
 
 // presence is what one release ships of one package.
 type presence struct {
-	ecosystem string
-	name      string
-	versions  map[string]bool
+	versions map[string]bool
 	// unchecked is set if some copy has a version that couldn't be checked.
 	unchecked bool
 }
 
 // comparedSide is one release, prepared for comparison.
 type comparedSide struct {
-	packages map[string]*presence // by sbom.Package.CategoryName()
+	packages map[packageID]*presence
 	findings map[key][]match.Finding
 }
 
@@ -233,12 +241,6 @@ func compareKey(k key, oldSide, newSide comparedSide) (Entry, bool) {
 		return Entry{}, false
 	}
 
-	// classify only reports packages present on at least one side.
-	pkg := oldSide.packages[k.packageName]
-	if pkg == nil {
-		pkg = newSide.packages[k.packageName]
-	}
-
 	var sources, advisories, notes []string
 	for _, finding := range append(slices.Clone(oldSide.findings[k]), newSide.findings[k]...) {
 		sources = append(sources, finding.Source)
@@ -248,10 +250,10 @@ func compareKey(k key, oldSide, newSide comparedSide) (Entry, bool) {
 	return Entry{
 		ID:         k.id,
 		Bucket:     bucket,
-		Package:    pkg.name,
-		Ecosystem:  pkg.ecosystem,
-		Old:        SideInfo{State: oldState, Versions: versionsOf(oldSide.packages[k.packageName])},
-		New:        SideInfo{State: newState, Versions: versionsOf(newSide.packages[k.packageName])},
+		Package:    k.pkg.name,
+		Ecosystem:  k.pkg.ecosystem,
+		Old:        SideInfo{State: oldState, Versions: versionsOf(oldSide.packages[k.pkg])},
+		New:        SideInfo{State: newState, Versions: versionsOf(newSide.packages[k.pkg])},
 		Sources:    sortedNonEmpty(sources),
 		Advisories: sortedNonEmpty(advisories),
 		Notes:      sortedNonEmpty(notes),
@@ -301,7 +303,7 @@ func (s *Summary) add(b Bucket) {
 // its findings. A copy that couldn't be checked makes it unchecked, unless
 // a finding already shows it affected.
 func (s comparedSide) stateOf(k key) State {
-	pkg := s.packages[k.packageName]
+	pkg := s.packages[k.pkg]
 	if pkg == nil {
 		return StateAbsent
 	}
@@ -322,51 +324,34 @@ func (s comparedSide) stateOf(k key) State {
 }
 
 // packagesOf lists what doc ships, including copies that couldn't be checked.
-func packagesOf(doc sbom.Document) map[string]*presence {
-	packages := map[string]*presence{}
-	for _, pkg := range slices.Concat(doc.Packages, doc.OSVPackages) {
+func packagesOf(doc sbom.Document) map[packageID]*presence {
+	packages := map[packageID]*presence{}
+	for _, pkg := range slices.Concat(doc.Ebuilds, doc.Modules) {
 		addPresence(packages, pkg)
 	}
 	for _, skipped := range doc.Skipped {
 		if skipped.Module != "" {
-			pkg := sbom.Package{Category: skipped.Ecosystem, Name: skipped.Module, Version: skipped.Version}
+			pkg := sbom.Package{Ecosystem: skipped.Ecosystem, Name: skipped.Module, Version: skipped.Version}
 			addPresence(packages, pkg).unchecked = true
 		}
 	}
 	return packages
 }
 
-func addPresence(packages map[string]*presence, pkg sbom.Package) *presence {
-	entry := packages[pkg.CategoryName()]
+func addPresence(packages map[packageID]*presence, pkg sbom.Package) *presence {
+	entry := packages[idOf(pkg)]
 	if entry == nil {
-		entry = &presence{ecosystem: ecosystemOf(pkg), name: displayName(pkg), versions: map[string]bool{}}
-		packages[pkg.CategoryName()] = entry
+		entry = &presence{versions: map[string]bool{}}
+		packages[idOf(pkg)] = entry
 	}
 	entry.versions[pkg.Version] = true
 	return entry
 }
 
-// ecosystemOf returns "golang" or "cargo" for OSV packages (sbom stores
-// these in Category), and "ebuild" for all others.
-func ecosystemOf(pkg sbom.Package) string {
-	if pkg.Category == "golang" || pkg.Category == "cargo" {
-		return pkg.Category
-	}
-	return "ebuild"
-}
-
-// displayName is "category/name" for ebuilds and the module path otherwise.
-func displayName(pkg sbom.Package) string {
-	if ecosystemOf(pkg) == "ebuild" {
-		return pkg.CategoryName()
-	}
-	return pkg.Name
-}
-
 func groupFindings(findings []match.Finding) map[key][]match.Finding {
 	grouped := map[key][]match.Finding{}
 	for _, finding := range findings {
-		k := key{id: finding.CVE, packageName: finding.Package.CategoryName()}
+		k := key{id: finding.CVE, pkg: idOf(finding.Package)}
 		grouped[k] = append(grouped[k], finding)
 	}
 	return grouped

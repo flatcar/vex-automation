@@ -118,7 +118,7 @@ func TestEvaluatePackageWithoutExceptionIsUnchanged(t *testing.T) {
 }
 
 func TestRunAppliesVersionSchemeException(t *testing.T) {
-	pkgs := []sbom.Package{{Category: "app-misc", Name: "ca-certificates", Version: "3.125", PURL: "pkg:ebuild/app-misc/ca-certificates@3.125"}}
+	pkgs := []sbom.Package{{Ecosystem: sbom.Ebuild, Category: "app-misc", Name: "ca-certificates", Version: "3.125", PURL: "pkg:ebuild/app-misc/ca-certificates@3.125"}}
 	g := glsa.GLSA{
 		ID:   "202610-01",
 		CVEs: []string{"CVE-2026-0001"},

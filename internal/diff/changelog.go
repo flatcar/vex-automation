@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"github.com/flatcar/vex-automation/internal/sbom"
 )
 
 // linkPrefixes maps a vulnerability ID prefix to the page it links to.
@@ -44,7 +46,10 @@ func FormatChangelog(result Result) string {
 
 // changelogPackage is one line of the changelog. Packages of different
 // ecosystems may share a name, so both are part of the key.
-type changelogPackage struct{ ecosystem, name string }
+type changelogPackage struct {
+	ecosystem sbom.Ecosystem
+	name      string
+}
 
 // fixedIDsByPackage collects the fixed IDs of each package.
 //
@@ -61,11 +66,11 @@ func fixedIDsByPackage(result Result) map[changelogPackage]map[string]bool {
 	}
 	uncheckedGo := map[string]bool{}
 	for _, skipped := range result.NotChecked.New {
-		if skipped.Ecosystem == "golang" {
+		if skipped.Ecosystem == sbom.Golang {
 			uncheckedGo[skipped.Module] = true
 		}
 	}
-	otherGoPackage := map[string]string{"stdlib": "toolchain", "toolchain": "stdlib"}
+	otherGoPackage := map[string]string{sbom.GoStdlib: sbom.GoToolchain, sbom.GoToolchain: sbom.GoStdlib}
 
 	ids := map[changelogPackage]map[string]bool{}
 	for _, entry := range result.Entries {
@@ -77,7 +82,7 @@ func fixedIDsByPackage(result Result) map[changelogPackage]map[string]bool {
 			if openGoIDs[entry.ID] || uncheckedGo[otherGoPackage[entry.Package]] {
 				continue
 			}
-			pkg.name = "stdlib"
+			pkg.name = sbom.GoStdlib
 		}
 		if ids[pkg] == nil {
 			ids[pkg] = map[string]bool{}
@@ -93,7 +98,7 @@ func isOpen(bucket Bucket) bool {
 }
 
 func isGo(entry Entry) bool {
-	return entry.Ecosystem == "golang" && (entry.Package == "stdlib" || entry.Package == "toolchain")
+	return entry.Ecosystem == sbom.Golang && (entry.Package == sbom.GoStdlib || entry.Package == sbom.GoToolchain)
 }
 
 // namePackages names packages as the release notes do (see shortName).
@@ -109,10 +114,10 @@ func namePackages(ids map[changelogPackage]map[string]bool) map[string]map[strin
 		name := shortName(pkg)
 		switch {
 		case packagesPerName[name] == 1:
-		case pkg.ecosystem == "ebuild":
+		case pkg.ecosystem == sbom.Ebuild:
 			name = pkg.name
 		default:
-			name += " (" + pkg.ecosystem + ")"
+			name += " (" + string(pkg.ecosystem) + ")"
 		}
 		idsByName[name] = pkgIDs
 	}
@@ -122,10 +127,10 @@ func namePackages(ids map[changelogPackage]map[string]bool) map[string]map[strin
 // shortName is an ebuild's name without its category, "Go" for the Go
 // standard library, and the module path for other packages.
 func shortName(pkg changelogPackage) string {
-	if pkg.ecosystem == "golang" && pkg.name == "stdlib" {
+	if pkg.ecosystem == sbom.Golang && pkg.name == sbom.GoStdlib {
 		return "Go"
 	}
-	if _, name, found := strings.Cut(pkg.name, "/"); found && pkg.ecosystem == "ebuild" {
+	if _, name, found := strings.Cut(pkg.name, "/"); found && pkg.ecosystem == sbom.Ebuild {
 		return name
 	}
 	return pkg.name

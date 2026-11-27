@@ -82,8 +82,8 @@ func runDiff(cmd *cobra.Command, opts diffOptions) error {
 		return err
 	}
 	in := diff.Input{
-		Old: diff.Side{Doc: oldDoc, Findings: match.RunGLSA(oldDoc.Packages, glsas, opts.arch)},
-		New: diff.Side{Doc: newDoc, Findings: match.RunGLSA(newDoc.Packages, glsas, opts.arch)},
+		Old: diff.Side{Doc: oldDoc, Findings: match.RunGLSA(oldDoc.Ebuilds, glsas, opts.arch)},
+		New: diff.Side{Doc: newDoc, Findings: match.RunGLSA(newDoc.Ebuilds, glsas, opts.arch)},
 	}
 	if opts.osvEnabled {
 		if err := addOSVFindings(cmd.Context(), opts, &in); err != nil {
@@ -91,10 +91,10 @@ func runDiff(cmd *cobra.Command, opts diffOptions) error {
 		}
 	} else {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not compared",
-			"old_packages", len(oldDoc.OSVPackages), "new_packages", len(newDoc.OSVPackages))
+			"old_packages", len(oldDoc.Modules), "new_packages", len(newDoc.Modules))
 		// Without findings, every golang/cargo package would look clean on
 		// both sides, so leave them out of the diff entirely.
-		in.Old.Doc.OSVPackages, in.New.Doc.OSVPackages = nil, nil
+		in.Old.Doc.Modules, in.New.Doc.Modules = nil, nil
 	}
 
 	result := diff.Compute(in)
@@ -126,7 +126,7 @@ func addOSVFindings(ctx context.Context, opts diffOptions, in *diff.Input) error
 	if err := applyCurlAdvisories(ctx, client, in); err != nil {
 		return fmt.Errorf("fetching curl advisories from OSV.dev: %w", err)
 	}
-	oldFindings, newFindings, err := matchOSVBothSides(ctx, client, in.Old.Doc.OSVPackages, in.New.Doc.OSVPackages)
+	oldFindings, newFindings, err := matchOSVBothSides(ctx, client, in.Old.Doc.Modules, in.New.Doc.Modules)
 	if err != nil {
 		return fmt.Errorf("matching against OSV.dev: %w", err)
 	}

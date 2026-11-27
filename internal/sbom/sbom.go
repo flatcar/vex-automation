@@ -1,15 +1,15 @@
 // Package sbom reads the SPDX SBOMs that Flatcar publishes for each image
-// and sorts their packages by the vulnerability source that can check them:
-// ebuild packages are checked against Gentoo's GLSAs, golang and cargo
-// packages against OSV.dev.
+// and sorts their packages by ecosystem: Gentoo ebuilds, which Gentoo's
+// GLSAs cover, and Go modules and Rust crates compiled into binaries, which
+// OSV.dev covers.
 //
-// The package type comes from the package's purl, e.g.
+// The ecosystem comes from the package's purl, e.g.
 // "pkg:ebuild/sys-apps/systemd@255.4-r2" or "pkg:golang/<module>@<version>".
 //
 // This is the first step of both generate and diff: the SBOM is the only
 // record of what a release ships, and Document's three lists decide what
-// gets checked (Packages by match.RunGLSA, OSVPackages by match.RunOSV) and
-// what gets reported as unchecked (Skipped).
+// gets checked (Ebuilds, Modules) and what gets reported as unchecked
+// (Skipped).
 package sbom
 
 import (
@@ -21,10 +21,31 @@ import (
 	"strings"
 )
 
+// Ecosystem is the packaging system a package comes from, named after its
+// purl type. It decides which vulnerability source can check the package.
+type Ecosystem string
+
+const (
+	// Ebuild is a Gentoo package built by Portage, e.g. sys-apps/systemd.
+	Ebuild Ecosystem = "ebuild"
+	// Golang is a Go module compiled into a binary.
+	Golang Ecosystem = "golang"
+	// Cargo is a Rust crate compiled into a binary.
+	Cargo Ecosystem = "cargo"
+)
+
+// The Go standard library and toolchain appear in SBOMs as golang packages
+// with these names instead of a module path.
+const (
+	GoStdlib    = "stdlib"
+	GoToolchain = "toolchain"
+)
+
 // Package is one package from an SBOM.
 type Package struct {
-	// Category is the Portage category (e.g. "sys-apps") of an ebuild
-	// package, or the purl type ("golang" or "cargo") of an OSV package.
+	Ecosystem Ecosystem
+	// Category is the Portage category of an ebuild, e.g. "sys-apps".
+	// It is empty for golang and cargo packages.
 	Category string
 	// Name is the ebuild name (e.g. "systemd") or the Go module / crate
 	// path (e.g. "github.com/golang-jwt/jwt/v4").
@@ -36,8 +57,12 @@ type Package struct {
 	PURL string
 }
 
-// CategoryName returns "category/name", the form GLSAs name packages in.
-func (p Package) CategoryName() string {
+// FullName returns "category/name" for an ebuild, the form GLSAs name
+// packages in, and the module or crate path for other packages.
+func (p Package) FullName() string {
+	if p.Category == "" {
+		return p.Name
+	}
 	return p.Category + "/" + p.Name
 }
 
@@ -46,10 +71,10 @@ type Document struct {
 	// Name is the SPDX document name. Flatcar's embeds the channel and
 	// version, e.g. ".../amd64-usr/stable-4593.2.4-a1/rootfs".
 	Name string
-	// Packages are the ebuild packages, checked against GLSAs.
-	Packages []Package
-	// OSVPackages are the golang/cargo packages, checked against OSV.dev.
-	OSVPackages []Package
+	// Ebuilds are the ebuild packages.
+	Ebuilds []Package
+	// Modules are the golang and cargo packages.
+	Modules []Package
 	// Skipped are the packages no source can check (e.g. the kernel, with
 	// its "pkg:generic" purl), so the gap can be reported.
 	Skipped []SkippedPackage
@@ -61,10 +86,10 @@ type SkippedPackage struct {
 	Version string
 	PURL    string // empty if the package has no purl
 	Reason  string
-	// Ecosystem and Module are set (like Package.Category and Name) only
+	// Ecosystem and Module are set (like Package.Ecosystem and Name) only
 	// for golang/cargo modules skipped because of their version, e.g.
 	// "(devel)", so callers can recognize another copy of a checked module.
-	Ecosystem string
+	Ecosystem Ecosystem
 	Module    string
 }
 
@@ -104,7 +129,7 @@ func Load(path string) (Document, error) {
 	for _, pkg := range spdx.Packages {
 		doc.add(pkg)
 	}
-	if len(doc.Packages) == 0 && len(doc.OSVPackages) == 0 {
+	if len(doc.Ebuilds) == 0 && len(doc.Modules) == 0 {
 		return Document{}, fmt.Errorf("SBOM file %q contains no ebuild, golang or cargo package to match", path)
 	}
 	return doc, nil
@@ -115,10 +140,10 @@ func (d *Document) add(pkg spdxPackage) {
 	switch ecosystem := purlType(purl); {
 	case purl == "":
 		d.skip(pkg, "", "no purl")
-	case ecosystem == "ebuild":
+	case ecosystem == Ebuild:
 		d.addEbuild(pkg, purl)
-	case ecosystem == "golang" || ecosystem == "cargo":
-		d.addOSV(pkg, purl, ecosystem)
+	case ecosystem == Golang || ecosystem == Cargo:
+		d.addModule(pkg, purl, ecosystem)
 	default:
 		d.skip(pkg, purl, "unsupported purl type")
 	}
@@ -132,10 +157,10 @@ func (d *Document) addEbuild(pkg spdxPackage, purl string) {
 		d.skip(pkg, purl, "malformed ebuild purl")
 		return
 	}
-	d.Packages = append(d.Packages, Package{Category: category, Name: name, Version: pkg.VersionInfo, PURL: purl})
+	d.Ebuilds = append(d.Ebuilds, Package{Ecosystem: Ebuild, Category: category, Name: name, Version: pkg.VersionInfo, PURL: purl})
 }
 
-func (d *Document) addOSV(pkg spdxPackage, purl, ecosystem string) {
+func (d *Document) addModule(pkg spdxPackage, purl string, ecosystem Ecosystem) {
 	module, ok := parseModulePurl(purl, ecosystem)
 	switch {
 	case !ok:
@@ -144,8 +169,8 @@ func (d *Document) addOSV(pkg spdxPackage, purl, ecosystem string) {
 		d.Skipped = append(d.Skipped, SkippedPackage{Name: pkg.Name, Version: pkg.VersionInfo, PURL: purl,
 			Reason: "version is not queryable", Ecosystem: ecosystem, Module: module})
 	default:
-		d.OSVPackages = append(d.OSVPackages, Package{
-			Category: ecosystem, Name: module, Version: osvVersion(ecosystem, module, pkg.VersionInfo), PURL: purl,
+		d.Modules = append(d.Modules, Package{
+			Ecosystem: ecosystem, Name: module, Version: osvVersion(ecosystem, module, pkg.VersionInfo), PURL: purl,
 		})
 	}
 }
@@ -171,23 +196,23 @@ func choosePurl(pkg spdxPackage) string {
 
 func purlPreference(purl string) int {
 	switch purlType(purl) {
-	case "ebuild":
+	case Ebuild:
 		return 0
-	case "golang", "cargo":
+	case Golang, Cargo:
 		return 1
 	default:
 		return 2
 	}
 }
 
-// purlType returns the type of a purl: "ebuild" for "pkg:ebuild/...".
-func purlType(purl string) string {
+// purlType returns the type of a purl: Ebuild for "pkg:ebuild/...".
+func purlType(purl string) Ecosystem {
 	rest, ok := strings.CutPrefix(purl, "pkg:")
 	typ, _, hasSlash := strings.Cut(rest, "/")
 	if !ok || !hasSlash {
 		return ""
 	}
-	return typ
+	return Ecosystem(typ)
 }
 
 // parseEbuildPurl reads category and name from
@@ -213,8 +238,8 @@ func parseEbuildPurl(purl string) (category, name string, ok bool) {
 //
 // Relative names such as "pkg:golang/../api@(devel)" are packages built
 // from inside their own module, not real modules, and are rejected.
-func parseModulePurl(purl, ecosystem string) (string, bool) {
-	rest := strings.TrimPrefix(purl, "pkg:"+ecosystem+"/")
+func parseModulePurl(purl string, ecosystem Ecosystem) (string, bool) {
+	rest := strings.TrimPrefix(purl, "pkg:"+string(ecosystem)+"/")
 	rest, subpath, _ := strings.Cut(rest, "#")
 	rest, _, _ = strings.Cut(rest, "?")
 	name, _, found := strings.Cut(rest, "@")
@@ -225,7 +250,7 @@ func parseModulePurl(purl, ecosystem string) (string, bool) {
 	if err != nil || name == "" || strings.HasPrefix(name, ".") {
 		return "", false
 	}
-	if ecosystem != "golang" {
+	if ecosystem != Golang {
 		return name, true
 	}
 	subpath, err = url.PathUnescape(strings.Trim(subpath, "/"))
@@ -248,8 +273,8 @@ func isQueryableVersion(version string) bool {
 // uses. Syft writes "go1.25.3", OSV.dev "1.25.3". Syft also keeps a
 // GOEXPERIMENT suffix ("go1.26.10-X:nodwarf5"), which OSV.dev would read
 // as a pre-release of 1.26.10, still vulnerable to what 1.26.10 fixed.
-func osvVersion(ecosystem, module, version string) string {
-	if ecosystem != "golang" || (module != "stdlib" && module != "toolchain") {
+func osvVersion(ecosystem Ecosystem, module, version string) string {
+	if ecosystem != Golang || (module != GoStdlib && module != GoToolchain) {
 		return version
 	}
 	version = strings.TrimPrefix(version, "go")

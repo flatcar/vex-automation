@@ -64,7 +64,7 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 		return err
 	}
 	logSkipped(doc.Skipped)
-	if !opts.osvEnabled && len(doc.Packages) == 0 {
+	if !opts.osvEnabled && len(doc.Ebuilds) == 0 {
 		return fmt.Errorf("SBOM %s has no ebuild package to match against GLSAs, and OSV.dev matching is disabled (--osv=false): nothing would be checked", opts.sbomPath)
 	}
 
@@ -81,16 +81,16 @@ func runGenerate(cmd *cobra.Command, opts generateOptions) error {
 
 	// Both matchers return findings in the same form, so the document can
 	// be built from one combined list.
-	findings := match.RunGLSA(doc.Packages, glsas, opts.arch)
+	findings := match.RunGLSA(doc.Ebuilds, glsas, opts.arch)
 	if opts.osvEnabled {
-		osvFindings, err := matchOSV(cmd, doc.OSVPackages, opts.osvBaseURL, opts.osvTimeout)
+		osvFindings, err := matchOSV(cmd, doc.Modules, opts.osvBaseURL, opts.osvTimeout)
 		if err != nil {
 			return fmt.Errorf("matching against OSV.dev: %w", err)
 		}
 		findings = append(findings, osvFindings...)
-	} else if len(doc.OSVPackages) > 0 {
+	} else if len(doc.Modules) > 0 {
 		slog.Warn("OSV.dev matching disabled (--osv=false): golang/cargo packages are not checked for vulnerabilities",
-			"packages", len(doc.OSVPackages))
+			"packages", len(doc.Modules))
 	}
 
 	vexDoc, err := vexgen.Build(findings, vexgen.Metadata{

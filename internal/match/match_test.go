@@ -31,7 +31,7 @@ func fuseGLSA() glsa.GLSA {
 
 func TestRunAffected(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 	}
 
 	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
@@ -58,7 +58,7 @@ func TestRunAffected(t *testing.T) {
 
 func TestRunFixed(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-fs", Name: "fuse", Version: "3.18.1", PURL: "pkg:ebuild/sys-fs/fuse@3.18.1"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.18.1", PURL: "pkg:ebuild/sys-fs/fuse@3.18.1"},
 	}
 
 	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
@@ -75,7 +75,7 @@ func TestRunFixed(t *testing.T) {
 
 func TestRunNoMatchingPackage(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-apps", Name: "systemd", Version: "255.4-r2", PURL: "pkg:ebuild/sys-apps/systemd@255.4-r2"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-apps", Name: "systemd", Version: "255.4-r2", PURL: "pkg:ebuild/sys-apps/systemd@255.4-r2"},
 	}
 
 	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
@@ -86,7 +86,7 @@ func TestRunNoMatchingPackage(t *testing.T) {
 
 func TestRunArchMismatch(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 	}
 	g := fuseGLSA()
 	g.Packages[0].Arch = "arm64"
@@ -101,7 +101,7 @@ func TestRunArchMismatch(t *testing.T) {
 // from the VEX document: it is reported as under investigation.
 func TestRunUnparseableVersionIsUnderInvestigation(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-fs", Name: "fuse", Version: "not-a-version!!", PURL: "pkg:ebuild/sys-fs/fuse@bogus"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "not-a-version!!", PURL: "pkg:ebuild/sys-fs/fuse@bogus"},
 	}
 
 	findings := RunGLSA(pkgs, []glsa.GLSA{fuseGLSA()}, "amd64")
@@ -117,7 +117,7 @@ func TestRunUnparseableVersionIsUnderInvestigation(t *testing.T) {
 
 func TestRunGLSAWithNoCVEsUsesGLSAID(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
+		{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"},
 	}
 	g := fuseGLSA()
 	g.CVEs = nil
@@ -356,7 +356,7 @@ func newOSVTestClient(t *testing.T, vulnsByPurl map[string][]string, aliasesByID
 
 func TestRunOSVBuildsFindingsFromResults(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 	}
 	client := newOSVTestClient(t,
 		map[string][]string{"pkg:golang/example.com/mod@v1.0.0": {"GHSA-aaaa"}},
@@ -392,7 +392,7 @@ func TestRunOSVBuildsFindingsFromResults(t *testing.T) {
 // finding, not just the first.
 func TestRunOSVReportsEveryCVEAlias(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 	}
 	client := newOSVTestClient(t,
 		map[string][]string{"pkg:golang/example.com/mod@v1.0.0": {"GO-2026-1"}},
@@ -424,7 +424,7 @@ func TestRunOSVReportsAliasedRecordsWithoutCVEOnce(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			pkgs := []sbom.Package{
-				{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+				{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
 			}
 			client := newOSVTestClient(t,
 				map[string][]string{"pkg:golang/example.com/mod@v1.0.0": {"GO-2026-1", "GHSA-aaaa", "GO-2026-2"}},
@@ -457,8 +457,8 @@ func TestRunOSVCanonicalizesAliasedRecordsAcrossPackages(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			pkgs := []sbom.Package{
-				{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
-				{Category: "golang", Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
+				{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+				{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
 			}
 			client := newOSVTestClient(t, map[string][]string{
 				"pkg:golang/example.com/mod@v1.0.0": {"GO-2026-1", "GHSA-aaaa"},
@@ -488,10 +488,10 @@ func TestRunOSVCanonicalizesAliasedRecordsAcrossPackages(t *testing.T) {
 // original SBOM purl.
 func TestRunOSVQueriesNormalizedModuleAndVersion(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "golang", Name: "github.com/golang-jwt/jwt/v4", Version: "v4.5.1", PURL: "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4"},
-		{Category: "golang", Name: "stdlib", Version: "1.25.3", PURL: "pkg:golang/stdlib@1.25.3"},
-		{Category: "golang", Name: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", Version: "v1.5.0", PURL: "pkg:golang/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.0"},
-		{Category: "cargo", Name: "smallvec", Version: "1.6.0", PURL: "pkg:cargo/smallvec@1.6.0"},
+		{Ecosystem: sbom.Golang, Name: "github.com/golang-jwt/jwt/v4", Version: "v4.5.1", PURL: "pkg:golang/github.com/golang-jwt/jwt@v4.5.1#v4"},
+		{Ecosystem: sbom.Golang, Name: "stdlib", Version: "1.25.3", PURL: "pkg:golang/stdlib@1.25.3"},
+		{Ecosystem: sbom.Golang, Name: "github.com/Azure/azure-sdk-for-go/sdk/azidentity", Version: "v1.5.0", PURL: "pkg:golang/github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.0"},
+		{Ecosystem: sbom.Cargo, Name: "smallvec", Version: "1.6.0", PURL: "pkg:cargo/smallvec@1.6.0"},
 	}
 	client := newOSVTestClient(t,
 		map[string][]string{
@@ -519,7 +519,7 @@ func TestRunOSVQueriesNormalizedModuleAndVersion(t *testing.T) {
 
 func TestRunOSVNoVulnerabilities(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "golang", Name: "example.com/safe", Version: "v1.0.0", PURL: "pkg:golang/example.com/safe@v1.0.0"},
+		{Ecosystem: sbom.Golang, Name: "example.com/safe", Version: "v1.0.0", PURL: "pkg:golang/example.com/safe@v1.0.0"},
 	}
 	client := newOSVTestClient(t, nil, nil)
 
@@ -546,7 +546,7 @@ func TestSortFindingsOrdersBySourceThenRefIDForIdenticalCVEAndPackage(t *testing
 	// Same CVE and same package.CategoryName()/Version (a scenario that
 	// could arise once both GLSA and OSV.dev are matched together), but two
 	// different sources: order must still be fully deterministic.
-	pkg := sbom.Package{Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"}
+	pkg := sbom.Package{Ecosystem: sbom.Ebuild, Category: "sys-fs", Name: "fuse", Version: "3.17.0", PURL: "pkg:ebuild/sys-fs/fuse@3.17.0"}
 	findings := []Finding{
 		{CVE: "CVE-2026-1", Source: SourceOSV, RefID: "GHSA-b", Package: pkg},
 		{CVE: "CVE-2026-1", Source: SourceGLSA, RefID: "202604-02", Package: pkg},
@@ -569,7 +569,7 @@ func TestSortFindingsOrdersBySourceThenRefIDForIdenticalCVEAndPackage(t *testing
 
 func TestApplyCurlAdvisories(t *testing.T) {
 	curl := func(version string) sbom.Package {
-		return sbom.Package{Category: "net-misc", Name: "curl", Version: version}
+		return sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "curl", Version: version}
 	}
 	glsaFinding := func(cve string, pkg sbom.Package) Finding {
 		return Finding{CVE: cve, Source: SourceGLSA, RefID: "202611-07", Package: pkg, Status: StatusAffected}
@@ -578,7 +578,7 @@ func TestApplyCurlAdvisories(t *testing.T) {
 		glsaFinding("CVE-2024-11053", curl("8.21.0-r1")), // fixed upstream in 8.11.1
 		glsaFinding("CVE-2026-13608", curl("8.21.0-r1")), // 8.21.0 is listed upstream
 		glsaFinding("CVE-2026-0001", curl("8.21.0-r1")),  // no upstream record
-		glsaFinding("CVE-2024-11053", sbom.Package{Category: "net-misc", Name: "wget", Version: "1.0"}),
+		glsaFinding("CVE-2024-11053", sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "wget", Version: "1.0"}),
 		{CVE: "CVE-2024-11053", Source: SourceOSV, RefID: "X", Package: curl("8.21.0"), Status: StatusAffected},
 	}
 
@@ -595,7 +595,7 @@ func TestApplyCurlAdvisories(t *testing.T) {
 	want := []Status{StatusNotAffected, StatusAffected, StatusAffected, StatusAffected, StatusAffected}
 	for i, f := range got {
 		if f.Status != want[i] {
-			t.Errorf("finding %d (%s %s): status %s, want %s", i, f.CVE, f.Package.CategoryName(), f.Status, want[i])
+			t.Errorf("finding %d (%s %s): status %s, want %s", i, f.CVE, f.Package.FullName(), f.Status, want[i])
 		}
 	}
 	if !strings.Contains(got[0].Note, "CURL-CVE-2024-11053") {
@@ -612,7 +612,7 @@ func TestApplyCurlAdvisoriesKeepsUnmappableVersions(t *testing.T) {
 	}
 	for _, version := range []string{"8.21.0_p1-r1", "8.21.0_rc1", "8.21.0_pre20260101", "9999"} {
 		f := Finding{CVE: "CVE-2026-13608", Source: SourceGLSA, RefID: "202611-07", Status: StatusAffected,
-			Package: sbom.Package{Category: "net-misc", Name: "curl", Version: version}}
+			Package: sbom.Package{Ecosystem: sbom.Ebuild, Category: "net-misc", Name: "curl", Version: version}}
 		if got := ApplyCurlAdvisories([]Finding{f}, advisories)[0].Status; got != StatusAffected {
 			t.Errorf("version %s: status %s, want %s", version, got, StatusAffected)
 		}
@@ -621,8 +621,8 @@ func TestApplyCurlAdvisoriesKeepsUnmappableVersions(t *testing.T) {
 
 func TestRunOSVPropagatesCVEsAcrossAliasGroups(t *testing.T) {
 	pkgs := []sbom.Package{
-		{Category: "golang", Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
-		{Category: "golang", Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
+		{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.0.0", PURL: "pkg:golang/example.com/mod@v1.0.0"},
+		{Ecosystem: sbom.Golang, Name: "example.com/mod", Version: "v1.1.0", PURL: "pkg:golang/example.com/mod@v1.1.0"},
 	}
 	client := newOSVTestClient(t, map[string][]string{
 		"pkg:golang/example.com/mod@v1.0.0": {"GHSA-aaaa"},
