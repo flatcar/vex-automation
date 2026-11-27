@@ -647,7 +647,8 @@ func TestGetSkipsMissingRecordsAndKeepsAffectedVersions(t *testing.T) {
 
 func TestGetPropagatesOtherErrors(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "nope", http.StatusForbidden)
+		// The body mentions a 404 to check that only the real status counts.
+		http.Error(w, `upstream said status="404 Not Found"`, http.StatusForbidden)
 	})
 	if _, err := c.Get(context.Background(), []string{"CURL-CVE-2024-11053"}); err == nil {
 		t.Fatal("Get succeeded on a 403")

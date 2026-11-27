@@ -6,6 +6,7 @@ package osv
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -200,9 +201,11 @@ func (c *Client) fetchVulnerability(ctx context.Context, id string) (Vulnerabili
 	return vuln, nil
 }
 
-// isNotFound reports a 404 answer, which osvdev only reports as error text.
+// isNotFound reports a 404 answer, which osvdev only reports as error
+// text that starts with the status and ends with the response body.
 func isNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), `status="404 `)
+	libraryErr := errors.Unwrap(err)
+	return libraryErr != nil && strings.HasPrefix(libraryErr.Error(), `client error: status="404 `)
 }
 
 // positiveOr returns value if it is above zero, and fallback otherwise.
