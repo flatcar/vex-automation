@@ -280,6 +280,30 @@ func TestSyncRemovesSymlinkInsideDest(t *testing.T) {
 	}
 }
 
+// TestSyncReplacesFileWithDirectory checks that an untracked file where
+// upstream now needs a directory is replaced, as "git reset --hard" does.
+func TestSyncReplacesFileWithDirectory(t *testing.T) {
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "202611"), []byte("stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(upstream, "202611"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addUpstreamFile(t, upstream, filepath.Join("202611", "glsa-202611-01.xml"))
+
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "202611", "glsa-202611-01.xml")); err != nil {
+		t.Errorf("new GLSA should be checked out: %v", err)
+	}
+}
+
 // TestSyncRemovesFilesFromAPartialFailedUpdate checks that an advisory a
 // failed update managed to write is removed on retry once upstream has
 // withdrawn it.

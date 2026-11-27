@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -273,9 +272,10 @@ func keepTrackingAttemptedFiles(repo *git.Repository, oldIndex *index.Index) err
 }
 
 // makeRoomForFiles clears what blocks the files upstream now tracks, as
-// git does: a symlink where a directory must be is removed, not followed,
-// and a directory where a file must be is deleted. go-git would fail or
-// write through the symlink. os.Root keeps all of this inside root.
+// git does: a file or symlink where a directory must be is removed (a
+// symlink is never followed), and a directory where a file must be is
+// deleted. go-git would fail or write through the symlink. os.Root keeps
+// all of this inside root.
 func makeRoomForFiles(root string, files []string) error {
 	dir, err := os.OpenRoot(root)
 	if err != nil {
@@ -301,12 +301,10 @@ func makeRoomFor(dir *os.Root, parts []string) error {
 		}
 		isTheFile := depth == len(parts)
 		switch {
-		case info.Mode()&fs.ModeSymlink != 0 && !isTheFile:
+		case !isTheFile && !info.IsDir():
 			return dir.Remove(path)
-		case info.IsDir() && isTheFile:
+		case isTheFile && info.IsDir():
 			return dir.RemoveAll(path)
-		case !info.IsDir():
-			return nil
 		}
 	}
 	return nil
