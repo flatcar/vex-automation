@@ -205,6 +205,62 @@ func TestSyncReplacesDirectoryWithFile(t *testing.T) {
 	}
 }
 
+// TestSyncStaysInsideDest checks that a hostile upstream cannot make an
+// update delete files outside dest: it first tracks a symlink to a
+// directory outside, then replaces the symlink with a directory whose
+// file has the same name as a directory outside.
+func TestSyncStaysInsideDest(t *testing.T) {
+	upstream := newTestUpstream(t)
+	if err := os.Symlink("../outside", filepath.Join(upstream, "a")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "add symlink a")
+	parent := t.TempDir()
+	outsideFile := filepath.Join(parent, "outside", "keep", "data")
+	if err := os.MkdirAll(filepath.Dir(outsideFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outsideFile, []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(parent, "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	if err := os.Remove(filepath.Join(upstream, "a")); err != nil {
+		t.Fatal(err)
+	}
+	commitAll(t, upstream, "remove symlink a")
+	if err := os.MkdirAll(filepath.Join(upstream, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	addUpstreamFile(t, upstream, filepath.Join("a", "keep"))
+
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (update): %v", err)
+	}
+	if got, err := os.ReadFile(outsideFile); err != nil || string(got) != "precious" {
+		t.Errorf("file outside dest = %q, %v; want it untouched", got, err)
+	}
+	if info, err := os.Lstat(filepath.Join(dest, "a", "keep")); err != nil || !info.Mode().IsRegular() {
+		t.Errorf("a/keep should be a file inside dest (err = %v)", err)
+	}
+}
+
+// TestSyncReportsUpdateErrors checks that a failing fetch during an
+// update is reported as such.
+func TestSyncReportsUpdateErrors(t *testing.T) {
+	upstream := newTestUpstream(t)
+	dest := filepath.Join(t.TempDir(), "glsa-mirror")
+	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
+		t.Fatalf("Sync (clone): %v", err)
+	}
+	_, err := Sync(context.Background(), dest, filepath.Join(t.TempDir(), "missing"), nil)
+	if err == nil || !strings.Contains(err.Error(), "fetching updates in "+dest) {
+		t.Fatalf("err = %v, want a fetch error naming %s", err, dest)
+	}
+}
+
 // TestSyncSwitchesRemoteOnRepoChange verifies that calling Sync again with a
 // different repoURL against an already-cloned dest re-points the "origin"
 // remote and syncs from the new repo, instead of silently continuing to
@@ -290,9 +346,9 @@ func TestSyncRespectsContextTimeout(t *testing.T) {
 // TestSyncDefaultsRepoURL confirms an empty repoURL falls back to
 // DefaultRepoURL rather than being passed through to git verbatim (which
 // would fail with a confusing "repository not found" for an empty string).
-// An already-expired context keeps this offline: git is invoked (proving
-// the empty-repoURL branch didn't short-circuit before reaching it) but is
-// killed before any real network I/O completes.
+// An already-expired context keeps this offline: the clone is started
+// (proving the empty-repoURL branch didn't short-circuit before reaching
+// it) but stops before any network I/O.
 func TestSyncDefaultsRepoURL(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
@@ -339,9 +395,8 @@ func TestSyncStatErrorNotNotExist(t *testing.T) {
 	}
 }
 
-// TestSyncUpdateFailsOnCorruptedCheckout covers update()'s error-wrapping
-// paths (fetch/reset failures) by pointing an existing ".git"-containing
-// dest at a repo whose ref state git will refuse to operate on cleanly.
+// TestSyncUpdateFailsOnCorruptedCheckout checks that a checkout whose HEAD
+// is garbage is reported instead of updated.
 func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")

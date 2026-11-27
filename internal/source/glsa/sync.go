@@ -239,11 +239,18 @@ func resetTrackedFiles(repo *git.Repository, commit plumbing.Hash) error {
 
 // removeDirectoriesInTheWay deletes directories where a file must go, as
 // git does when upstream turns a directory into a file; go-git would fail.
+// os.Root keeps every path inside root, even through symlinks a hostile
+// upstream may have checked out earlier.
 func removeDirectoriesInTheWay(root string, files []string) error {
+	dir, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }()
 	for _, file := range files {
-		path := filepath.Join(root, filepath.FromSlash(file))
-		if info, err := os.Lstat(path); err == nil && info.IsDir() {
-			if err := os.RemoveAll(path); err != nil {
+		name := filepath.FromSlash(file)
+		if info, err := dir.Lstat(name); err == nil && info.IsDir() {
+			if err := dir.RemoveAll(name); err != nil {
 				return err
 			}
 		}
