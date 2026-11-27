@@ -20,7 +20,7 @@
 //	diff.Compute               classify each (vulnerability, package) pair
 //	diff.FormatChangelog       optionally render the fixed ones as Markdown
 //
-// sync-glsa (glsasync.Sync) clones or updates the advisory directory that
+// sync-glsa (glsa.Sync) clones or updates the advisory directory that
 // generate and diff read with --glsa-dir.
 //
 // All steps share one rule: something that wasn't checked must not look

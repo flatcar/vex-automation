@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/flatcar/vex-automation/internal/glsasync"
+	"github.com/flatcar/vex-automation/internal/source/glsa"
 	"github.com/spf13/cobra"
 )
 
@@ -23,14 +23,16 @@ directory containing every upstream Gentoo GLSA *.xml advisory, so you don't
 have to source or keep one up to date by hand before running "generate
 --glsa-dir".
 
-It shells out to "git" against the same corpus Gentoo publishes at
-` + glsasync.DefaultRepoURL + `, rather than
-re-fetching or re-parsing individual files itself.`,
+It uses a built-in git implementation, so git does not need to be
+installed, and reads the same corpus Gentoo publishes at
+` + glsa.DefaultRepoURL + `.
+You can also clone that repository yourself
+(git clone --depth 1 <url> glsa-data) and pass it to --glsa-dir.`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, cancel := withTimeout(cmd.Context(), timeout)
 			defer cancel()
-			result, err := glsasync.Sync(ctx, dest, repo, cmd.ErrOrStderr())
+			result, err := glsa.Sync(ctx, dest, repo, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -40,14 +42,14 @@ re-fetching or re-parsing individual files itself.`,
 	}
 
 	cmd.Flags().StringVar(&dest, "dest", "glsa-data", "local directory to sync the GLSA corpus into")
-	cmd.Flags().StringVar(&repo, "repo", glsasync.DefaultRepoURL, "upstream GLSA git repository to sync from")
-	cmd.Flags().DurationVar(&timeout, "timeout", glsasync.DefaultTimeout, "maximum time to allow the clone/update to run")
+	cmd.Flags().StringVar(&repo, "repo", glsa.DefaultRepoURL, "upstream GLSA git repository to sync from")
+	cmd.Flags().DurationVar(&timeout, "timeout", glsa.DefaultTimeout, "maximum time to allow the clone/update to run")
 
 	return cmd
 }
 
 // describeSync summarizes what Sync did in one line.
-func describeSync(result glsasync.Result) string {
+func describeSync(result glsa.SyncResult) string {
 	switch {
 	case result.Cloned:
 		return fmt.Sprintf("Cloned GLSA mirror at %s (%d advisories, %s)", result.Dest, result.FileCount, short(result.NewCommit))

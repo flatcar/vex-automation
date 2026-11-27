@@ -1,4 +1,4 @@
-package glsasync
+package glsa
 
 import (
 	"bytes"
@@ -7,40 +7,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 // newTestUpstream creates a throwaway local Git repository (acting as a
 // stand-in for the real anongit.gentoo.org remote) containing a single
 // glsa-*.xml file, and returns its path. Using a local repo keeps this test
 // offline and fast instead of depending on network access.
+//
+// go-git reads a local repository by running git's upload-pack, so these
+// tests need git installed even though Sync does not for remote URLs.
 func newTestUpstream(t *testing.T) string {
 	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
 	dir := t.TempDir()
-
-	run := func(args ...string) {
-		t.Helper()
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
-			"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+	if _, err := git.PlainInit(dir, false); err != nil {
+		t.Fatalf("git init: %v", err)
 	}
-
-	run("init", "-b", "master")
-	if err := os.WriteFile(filepath.Join(dir, "glsa-202601-01.xml"), []byte("<glsa/>"), 0o600); err != nil {
-		t.Fatalf("writing seed file: %v", err)
-	}
-	run("add", ".")
-	run("commit", "-m", "seed")
-
+	addUpstreamFile(t, dir, "glsa-202601-01.xml")
 	return dir
 }
 
@@ -51,27 +43,30 @@ func addUpstreamFile(t *testing.T, upstreamDir, name string) {
 	if err := os.WriteFile(filepath.Join(upstreamDir, name), []byte("<glsa/>"), 0o600); err != nil {
 		t.Fatalf("writing %s: %v", name, err)
 	}
-	cmd := exec.Command("git", "add", ".")
-	cmd.Dir = upstreamDir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v\n%s", err, out)
+	commitAll(t, upstreamDir, "add "+name)
+}
+
+// commitAll commits every file in dir, as "git add . && git commit" would.
+func commitAll(t *testing.T, dir, message string) {
+	t.Helper()
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		t.Fatalf("opening %s: %v", dir, err)
 	}
-	cmd = exec.Command("git", "commit", "-m", "add "+name)
-	cmd.Dir = upstreamDir
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.com",
-		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.com",
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatalf("worktree of %s: %v", dir, err)
+	}
+	if err := worktree.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	author := &object.Signature{Name: "test", Email: "test@example.com", When: time.Now()}
+	if _, err := worktree.Commit(message, &git.CommitOptions{Author: author, AllowEmptyCommits: true}); err != nil {
+		t.Fatalf("git commit: %v", err)
 	}
 }
 
 func TestSyncClonesThenUpdates(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
@@ -114,10 +109,6 @@ func TestSyncClonesThenUpdates(t *testing.T) {
 // remote and syncs from the new repo, instead of silently continuing to
 // fetch from whichever repo dest was originally cloned from.
 func TestSyncSwitchesRemoteOnRepoChange(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	upstreamA := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
@@ -164,10 +155,6 @@ func TestSyncRejectsEmptyDest(t *testing.T) {
 // upstream fails with a useful, non-hanging error instead of silently
 // succeeding or timing out for the full DefaultTimeout.
 func TestSyncFailsFastOnBadRepo(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	badRepo := filepath.Join(t.TempDir(), "does-not-exist.git")
 
@@ -186,10 +173,6 @@ func TestSyncFailsFastOnBadRepo(t *testing.T) {
 // TestSyncRespectsContextTimeout confirms an already-expired context is
 // honored (the clone doesn't run to completion regardless of deadline).
 func TestSyncRespectsContextTimeout(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
@@ -210,10 +193,6 @@ func TestSyncRespectsContextTimeout(t *testing.T) {
 // the empty-repoURL branch didn't short-circuit before reaching it) but is
 // killed before any real network I/O completes.
 func TestSyncDefaultsRepoURL(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	ctx, cancel := context.WithTimeout(context.Background(), 0)
 	defer cancel()
@@ -228,17 +207,18 @@ func TestSyncDefaultsRepoURL(t *testing.T) {
 	}
 }
 
-// TestSyncGitNotFound simulates git being absent from PATH.
-func TestSyncGitNotFound(t *testing.T) {
+// TestSyncNeedsNoGitBinary checks that syncing from a remote URL never
+// runs git: with an empty PATH the error is a network one.
+func TestSyncNeedsNoGitBinary(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
-	_, err := Sync(context.Background(), dest, "https://example.invalid/glsa.git", nil)
+	_, err := Sync(context.Background(), dest, "https://127.0.0.1:1/glsa.git", nil)
 	if err == nil {
-		t.Fatal("expected an error when git is not in PATH, got nil")
+		t.Fatal("expected an error cloning from a closed port, got nil")
 	}
-	if !strings.Contains(err.Error(), "git") {
-		t.Errorf("error %q should mention git", err)
+	if strings.Contains(err.Error(), "executable file not found") {
+		t.Errorf("Sync tried to run a program: %v", err)
 	}
 }
 
@@ -262,10 +242,6 @@ func TestSyncStatErrorNotNotExist(t *testing.T) {
 // paths (fetch/reset failures) by pointing an existing ".git"-containing
 // dest at a repo whose ref state git will refuse to operate on cleanly.
 func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
@@ -284,10 +260,6 @@ func TestSyncUpdateFailsOnCorruptedCheckout(t *testing.T) {
 }
 
 func TestSyncRefusesNonGitDirectory(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
 	upstream := newTestUpstream(t)
 	dest := t.TempDir() // exists, but is not a git checkout
 
@@ -306,9 +278,6 @@ func TestSyncRefusesNonGitDirectory(t *testing.T) {
 }
 
 func TestSyncReportsStepsAndCommits(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 
@@ -346,25 +315,18 @@ func TestSyncReportsStepsAndCommits(t *testing.T) {
 	}
 }
 
-func gitIn(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v: %v\n%s", args, err, out)
-	}
-}
-
 // An interrupted clone can leave a .git with no commit yet; a later Sync
 // must still update it.
 func TestSyncUpdatesCheckoutWithUnbornHead(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	upstream := newTestUpstream(t)
 	dest := t.TempDir()
-	gitIn(t, dest, "init", "-q")
-	gitIn(t, dest, "remote", "add", "origin", upstream)
+	repo, err := git.PlainInit(dest, false)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{upstream}}); err != nil {
+		t.Fatalf("git remote add: %v", err)
+	}
 
 	res, err := Sync(context.Background(), dest, upstream, nil)
 	if err != nil {
@@ -375,10 +337,7 @@ func TestSyncUpdatesCheckoutWithUnbornHead(t *testing.T) {
 	}
 }
 
-func TestSyncReportsGitErrorForCorruptedCheckout(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
+func TestSyncReportsErrorForCorruptedCheckout(t *testing.T) {
 	upstream := newTestUpstream(t)
 	dest := filepath.Join(t.TempDir(), "glsa-mirror")
 	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
@@ -389,15 +348,12 @@ func TestSyncReportsGitErrorForCorruptedCheckout(t *testing.T) {
 	}
 
 	_, err := Sync(context.Background(), dest, upstream, nil)
-	if err == nil || !strings.Contains(err.Error(), "fatal:") {
-		t.Fatalf("Sync error = %v, want git's own diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), dest) {
+		t.Fatalf("Sync error = %v, want an error naming %s", err, dest)
 	}
 }
 
 func TestSyncRedactsCredentialsInMessages(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	var progress bytes.Buffer
@@ -415,15 +371,15 @@ func TestSyncRedactsCredentialsInMessages(t *testing.T) {
 	}
 }
 
-func TestNetworkArgsAddsProgressOnlyForTerminals(t *testing.T) {
+func TestDownloadProgressOnlyForTerminals(t *testing.T) {
 	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatalf("opening %s: %v", os.DevNull, err)
 	}
 	t.Cleanup(func() { _ = devNull.Close() })
 	for name, w := range map[string]io.Writer{"nil": nil, "buffer": &bytes.Buffer{}, os.DevNull: devNull} {
-		if got := (git{progress: w}).networkArgs("fetch", "origin"); slices.Contains(got, "--progress") {
-			t.Errorf("%s: networkArgs = %v, want no --progress", name, got)
+		if got := (syncer{progress: w}).terminal(); got != nil {
+			t.Errorf("%s: terminal() = %v, want nil", name, got)
 		}
 	}
 
@@ -432,8 +388,8 @@ func TestNetworkArgsAddsProgressOnlyForTerminals(t *testing.T) {
 		t.Skipf("no terminal available: %v", err)
 	}
 	t.Cleanup(func() { _ = tty.Close() })
-	if got := (git{progress: tty}).networkArgs("fetch", "origin"); !slices.Equal(got, []string{"fetch", "--progress", "origin"}) {
-		t.Errorf("terminal: networkArgs = %v, want --progress after the subcommand", got)
+	if got := (syncer{progress: tty}).terminal(); got != tty {
+		t.Errorf("terminal: terminal() = %v, want the terminal", got)
 	}
 }
 

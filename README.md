@@ -87,7 +87,9 @@ curl -LO https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_prod
 
 `sync-glsa` clones Gentoo's GLSA advisory corpus into a local directory. Run it once to
 fetch everything, and run it again any time later to update to the latest advisories
-in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step):
+in place (it's safe to re-run repeatedly, e.g. from a cron job or CI step). It has git
+built in, so git does not need to be installed, and the result line names the exact
+upstream commit the advisories come from:
 
 ```console
 ./bin/flatcar-vex sync-glsa --dest ./glsa-data
@@ -98,7 +100,7 @@ Cloning https://anongit.gentoo.org/git/data/glsa.git into ./glsa-data...
 Cloned GLSA mirror at ./glsa-data (3870 advisories, bffa9cc50d60)
 ```
 
-Each step is printed to stderr as it starts (plus git's progress meter on a terminal), and
+Each step is printed to stderr as it starts (plus a download progress meter on a terminal), and
 the result line goes to stdout. Gentoo's server can take a few minutes to answer.
 
 Running the same command again later updates the existing mirror instead of re-cloning:
@@ -119,8 +121,13 @@ Useful flags:
 - `--dest` – where to put (or update) the local mirror. Defaults to `glsa-data`.
 - `--repo` – sync from a different Git remote instead of Gentoo's canonical
   `anongit.gentoo.org/git/data/glsa.git`. Re-running with a different `--repo` against an
-  existing `--dest` re-points it at the new remote.
+  existing `--dest` re-points it at the new remote. A local repository path also works, but
+  needs git installed.
 - `--timeout` – cap how long the clone/update is allowed to run before giving up (default `5m`).
+
+You can also skip `sync-glsa` and clone the repository yourself with
+`git clone --depth 1 https://anongit.gentoo.org/git/data/glsa.git glsa-data`; `--glsa-dir`
+accepts any directory of GLSA XML files.
 
 #### 3. Generate the VEX document
 
