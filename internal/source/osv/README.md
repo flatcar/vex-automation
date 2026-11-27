@@ -4,10 +4,11 @@
 compiled into Flatcar's binaries, which Gentoo writes no advisories for. It needs network
 access; `--osv=false` turns it off.
 
-`Client` is a small OSV.dev client. `Query` sends package versions to the batch endpoint,
-which returns the IDs of the vulnerabilities affecting each exact version, following
-pagination; `Get` fetches full records, because only those list the CVE aliases. Records are
-fetched ten at a time, and every request is retried on rate limits and server errors.
+`Client` wraps OSV.dev's own Go client (`osv.dev/bindings/go/osvdev`), which does the HTTP
+calls and retries them on network errors, rate limits and server errors. `Query` sends
+package versions to the batch endpoint, which returns the IDs of the vulnerabilities
+affecting each exact version, and follows pagination (the library does not); `Get` fetches
+full records, because only those list the CVE aliases. Records are fetched ten at a time.
 
 `Match` turns the answers into findings. Two consequences of how OSV.dev works shape it.
 Every finding is `affected`, because OSV.dev only answers for vulnerable versions; a fixed

@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"osv.dev/bindings/go/osvdev"
 )
 
 // newTestClient starts an httptest.Server serving fixed querybatch/vulns
@@ -20,7 +22,45 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &Client{BaseURL: srv.URL, RetryBackoff: time.Millisecond}
+	return &Client{BaseURL: srv.URL, Config: noRetryWait()}
+}
+
+// noRetryWait is osvdev's default config without the waits between retries.
+func noRetryWait() osvdev.ClientConfig {
+	config := osvdev.DefaultConfig()
+	config.BackoffDurationMultiplier = 0
+	config.JitterMultiplier = 0
+	return config
+}
+
+// The requests and answers of the OSV.dev API, as the test server sees them.
+type queryBatchRequest struct {
+	Queries []struct {
+		Package struct {
+			Name      string `json:"name"`
+			Ecosystem string `json:"ecosystem"`
+		} `json:"package"`
+		Version   string `json:"version"`
+		PageToken string `json:"page_token"`
+	} `json:"queries"`
+}
+
+type queryBatchResponse struct {
+	Results []queryResult `json:"results"`
+}
+
+type queryResult struct {
+	Vulns         []queryVuln `json:"vulns"`
+	NextPageToken string      `json:"next_page_token,omitempty"`
+}
+
+type queryVuln struct {
+	ID string `json:"id"`
+}
+
+type vulnResponse struct {
+	ID      string   `json:"id"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 func goPackage(name, version string) Package {
@@ -131,16 +171,6 @@ func TestQueryDeduplicatesPackagesAndVulnIDs(t *testing.T) {
 	}
 }
 
-func TestQueryUsesDefaultBatchSizeWhenNegative(t *testing.T) {
-	c := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(queryBatchResponse{Results: []queryResult{{}}})
-	})
-	c.BatchSize = -1
-	if _, err := c.Query(context.Background(), []Package{testPackage}); err != nil {
-		t.Fatalf("Query returned error: %v", err)
-	}
-}
-
 func TestQueryEmptyInput(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected request for empty input: %s %s", r.Method, r.URL.Path)
@@ -153,42 +183,6 @@ func TestQueryEmptyInput(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("got %d results, want 0", len(got))
-	}
-}
-
-func TestQueryChunksLargeBatches(t *testing.T) {
-	var batches [][]int
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/querybatch" {
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		var req queryBatchRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decoding querybatch request: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		batches = append(batches, []int{len(req.Queries)})
-		resp := queryBatchResponse{Results: make([]queryResult, len(req.Queries))}
-		_ = json.NewEncoder(w).Encode(resp)
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(handler))
-	t.Cleanup(srv.Close)
-	c := &Client{BaseURL: srv.URL, BatchSize: 2}
-
-	pkgs := []Package{goPackage("a", "v1"), goPackage("b", "v1"), goPackage("c", "v1"), goPackage("d", "v1"), goPackage("e", "v1")}
-	if _, err := c.Query(context.Background(), pkgs); err != nil {
-		t.Fatalf("Query returned error: %v", err)
-	}
-
-	if len(batches) != 3 {
-		t.Fatalf("got %d batch requests, want 3 (5 packages at batch size 2): %+v", len(batches), batches)
-	}
-	if batches[0][0] != 2 || batches[1][0] != 2 || batches[2][0] != 1 {
-		t.Errorf("batch sizes = %v, want [2 2 1]", batches)
 	}
 }
 
@@ -624,21 +618,6 @@ func TestFetchVulnerabilitiesFailsWhenParentContextIsCanceled(t *testing.T) {
 
 	if got, err := c.fetchVulnerabilities(ctx, []string{"GO-1", "GO-2", "GO-3"}, false); err == nil {
 		t.Fatalf("got %d of 3 vulnerabilities and no error, want a cancellation error", len(got))
-	}
-}
-
-func TestRetryWaitCapsRetryAfter(t *testing.T) {
-	cases := []struct {
-		retryAfter, backoff, want time.Duration
-	}{
-		{0, 2 * time.Second, 2 * time.Second},
-		{5 * time.Second, time.Second, 5 * time.Second},
-		{24 * time.Hour, time.Second, maxRetryAfter},
-	}
-	for _, c := range cases {
-		if got := retryWait(c.retryAfter, c.backoff); got != c.want {
-			t.Errorf("retryWait(%v, %v) = %v, want %v", c.retryAfter, c.backoff, got, c.want)
-		}
 	}
 }
 
