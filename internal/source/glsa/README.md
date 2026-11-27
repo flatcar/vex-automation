@@ -15,13 +15,9 @@ has other files in it, and refuses upstream paths git itself would reject (such 
 anything under `.git`). An update first says how many local changes it discards, so a
 modified mirror shows up in the log.
 
-Credentials in an http(s) repository URL are sent as basic auth but never written to
-`.git/config`, and never appear in errors or progress output. Re-pointing `--repo` only
-changes origin's URL, like `git remote set-url`. Being go-git, ssh URLs authenticate
-through ssh-agent and `known_hosts` only; git credential helpers, `GIT_SSH_COMMAND` and
-`insteadOf` rules are not used (clone with `git` yourself if you need them). A local
-repository path still needs `git` installed, because go-git reads local repositories
-through `git upload-pack`.
+Re-pointing `--repo` only changes origin's URL, like `git remote set-url`, and git's
+`insteadOf` rewrite rules are not applied. A local repository path still needs `git`
+installed, because go-git reads local repositories through `git upload-pack`.
 
 ## Parsing
 

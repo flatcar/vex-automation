@@ -642,59 +642,6 @@ func TestSyncUpdatesCheckoutWithUnbornHead(t *testing.T) {
 	}
 }
 
-func TestSyncRedactsCredentialsInMessages(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	var progress bytes.Buffer
-	_, err := Sync(ctx, filepath.Join(t.TempDir(), "g"), "https://user:s3cret@127.0.0.1:1/glsa.git", &progress)
-	if err == nil {
-		t.Fatal("expected an error cloning from a closed port")
-	}
-	if want := "Cloning https://127.0.0.1:1/glsa.git into "; !strings.Contains(progress.String(), want) {
-		t.Errorf("progress = %q, want it to contain %q", progress.String(), want)
-	}
-	for _, out := range []string{progress.String(), err.Error()} {
-		if strings.Contains(out, "s3cret") || strings.Contains(out, "user@") {
-			t.Errorf("credentials leaked: %q", out)
-		}
-	}
-}
-
-// TestSyncRedactsCredentialsInHTTPErrors covers go-git's own error text,
-// which repeats the URL as "user:REDACTED@host": the user name can be a
-// token too.
-func TestSyncRedactsCredentialsInHTTPErrors(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, "broken", http.StatusInternalServerError)
-	}))
-	t.Cleanup(srv.Close)
-	repoURL := strings.Replace(srv.URL, "://", "://ghp_tok%21en:x-oauth-basic@", 1) + "/glsa.git"
-
-	_, err := Sync(context.Background(), filepath.Join(t.TempDir(), "g"), repoURL, nil)
-	if err == nil {
-		t.Fatal("expected an error from a failing server")
-	}
-	for _, secret := range []string{"ghp_tok", "x-oauth-basic", "REDACTED@"} {
-		if strings.Contains(err.Error(), secret) {
-			t.Errorf("error contains %q: %v", secret, err)
-		}
-	}
-}
-
-// TestSyncRedactsCredentialsInQuotedURLs covers url.Parse errors, which
-// repeat the URL Go-quoted, so a password with a '"' is escaped there.
-func TestSyncRedactsCredentialsInQuotedURLs(t *testing.T) {
-	_, err := Sync(context.Background(), filepath.Join(t.TempDir(), "g"), `https://user:pa"ss@example.invalid/glsa.git`, nil)
-	if err == nil {
-		t.Fatal("expected an error for an invalid URL")
-	}
-	for _, secret := range []string{`pa"ss`, `pa\"ss`, "user@"} {
-		if strings.Contains(err.Error(), secret) {
-			t.Errorf("error contains %q: %v", secret, err)
-		}
-	}
-}
-
 func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
 	root := t.TempDir()
 	gitObjects := filepath.Join(root, ".git", "objects")
@@ -708,57 +655,6 @@ func TestMakeRoomForFilesRejectsUnsafePaths(t *testing.T) {
 	}
 	if _, err := os.Stat(gitObjects); err != nil {
 		t.Errorf(".git/objects must survive: %v", err)
-	}
-}
-
-// TestSyncKeepsCredentialsOutOfConfig checks that credentials in --repo
-// reach the server but are never written to .git/config, where a cached
-// or uploaded mirror would expose them.
-func TestSyncKeepsCredentialsOutOfConfig(t *testing.T) {
-	var gotUser, gotPassword string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUser, gotPassword, _ = r.BasicAuth()
-		http.Error(w, "broken", http.StatusInternalServerError)
-	}))
-	t.Cleanup(srv.Close)
-	upstream := newTestUpstream(t)
-	dest := filepath.Join(t.TempDir(), "glsa-mirror")
-	if _, err := Sync(context.Background(), dest, upstream, nil); err != nil {
-		t.Fatalf("Sync (clone): %v", err)
-	}
-
-	repoURL := strings.Replace(srv.URL, "://", "://bot:s3cret@", 1) + "/glsa.git"
-	if _, err := Sync(context.Background(), dest, repoURL, nil); err == nil {
-		t.Fatal("expected an error from a failing server")
-	}
-	if gotUser != "bot" || gotPassword != "s3cret" {
-		t.Errorf("server got credentials %q:%q, want bot:s3cret", gotUser, gotPassword)
-	}
-	gitConfig, err := os.ReadFile(filepath.Join(dest, ".git", "config"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(gitConfig), "s3cret") || !strings.Contains(string(gitConfig), srv.URL+"/glsa.git") {
-		t.Errorf(".git/config should name %s/glsa.git without credentials:\n%s", srv.URL, gitConfig)
-	}
-}
-
-func TestSplitCredentials(t *testing.T) {
-	for repoURL, want := range map[string]string{
-		"https://bot:s3cret@example.com/glsa.git": "https://example.com/glsa.git",
-		"http://token@example.com/glsa.git":       "http://example.com/glsa.git",
-		"https://example.com/glsa.git":            "https://example.com/glsa.git",
-		"ssh://git@example.com/glsa.git":          "ssh://git@example.com/glsa.git",
-		"git@example.com:glsa.git":                "git@example.com:glsa.git",
-		"/srv/glsa":                               "/srv/glsa",
-	} {
-		got, auth := splitCredentials(repoURL)
-		if got != want {
-			t.Errorf("splitCredentials(%q) URL = %q, want %q", repoURL, got, want)
-		}
-		if (auth != nil) != (got != repoURL) {
-			t.Errorf("splitCredentials(%q) auth = %v, want auth only when credentials were split off", repoURL, auth)
-		}
 	}
 }
 
@@ -803,9 +699,9 @@ func TestSyncIgnoresURLRewritesOnRepoChange(t *testing.T) {
 		http.Error(w, "broken", http.StatusInternalServerError)
 	}))
 	t.Cleanup(oldServer.Close)
-	var gotUser string
-	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUser, _, _ = r.BasicAuth()
+	newServerHits := 0
+	newServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newServerHits++
 		http.Error(w, "broken", http.StatusInternalServerError)
 	}))
 	t.Cleanup(newServer.Close)
@@ -828,12 +724,11 @@ func TestSyncIgnoresURLRewritesOnRepoChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	repoURL := strings.Replace(newServer.URL, "://", "://bot:s3cret@", 1) + "/glsa.git"
-	if _, err := Sync(context.Background(), dest, repoURL, nil); err == nil {
+	if _, err := Sync(context.Background(), dest, newServer.URL+"/glsa.git", nil); err == nil {
 		t.Fatal("expected an error from a failing server")
 	}
-	if oldServerHits != 0 || gotUser != "bot" {
-		t.Errorf("old server got %d requests, new server got user %q; want 0 and bot", oldServerHits, gotUser)
+	if oldServerHits != 0 || newServerHits == 0 {
+		t.Errorf("old server got %d requests, new server %d; want only the new server", oldServerHits, newServerHits)
 	}
 	gitConfig, err = os.ReadFile(configPath)
 	if err != nil {
@@ -932,20 +827,5 @@ func TestDownloadProgressOnlyForTerminals(t *testing.T) {
 	t.Cleanup(func() { _ = tty.Close() })
 	if got := (syncer{progress: tty}).terminal(); got != tty {
 		t.Errorf("terminal: terminal() = %v, want the terminal", got)
-	}
-}
-
-func TestRedact(t *testing.T) {
-	for in, want := range map[string]string{
-		"https://anongit.gentoo.org/git/data/glsa.git": "https://anongit.gentoo.org/git/data/glsa.git",
-		"https://user:s3cret@host/glsa.git":            "https://host/glsa.git",
-		"https://user:pa%zz@host/glsa.git":             "https://host/glsa.git",
-		"https://user:p/w@host/glsa.git":               "https://host/glsa.git",
-		"git@github.com:gentoo/glsa.git":               "github.com:gentoo/glsa.git",
-		"/srv/mirror/glsa":                             "/srv/mirror/glsa",
-	} {
-		if got := redact(in); got != want {
-			t.Errorf("redact(%q) = %q, want %q", in, got, want)
-		}
 	}
 }

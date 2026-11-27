@@ -6,11 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -19,8 +16,6 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	format "github.com/go-git/go-git/v5/plumbing/format/config"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/go-git/go-git/v5/storage/filesystem"
 	"golang.org/x/term"
 )
@@ -57,9 +52,7 @@ type SyncResult struct {
 //
 // Updating makes dest match upstream exactly, removing local edits and
 // stray files (and saying how many), so dest should be a dedicated mirror.
-// A non-empty directory that is not a clone is left untouched. Credentials
-// in an http(s) repoURL are sent with each request but never stored in
-// dest/.git/config.
+// A non-empty directory that is not a clone is left untouched.
 //
 // If progress is not nil, Sync reports each step to it, plus a download
 // progress meter if progress is a terminal.
@@ -76,8 +69,7 @@ func Sync(ctx context.Context, dest, repoURL string, progress io.Writer) (SyncRe
 		defer cancel()
 	}
 
-	remoteURL, auth := splitCredentials(repoURL)
-	s := syncer{dest: dest, repoURL: repoURL, remoteURL: remoteURL, auth: auth, progress: progress}
+	s := syncer{dest: dest, repoURL: repoURL, progress: progress}
 	_, err := os.Stat(filepath.Join(dest, ".git"))
 	switch {
 	case os.IsNotExist(err):
@@ -104,12 +96,10 @@ func Sync(ctx context.Context, dest, repoURL string, progress io.Writer) (SyncRe
 	return s.summarize(repo, false, oldCommit)
 }
 
-// syncer holds what one Sync call works on. remoteURL is repoURL without
-// http(s) credentials, which travel in auth instead.
+// syncer holds what one Sync call works on.
 type syncer struct {
-	dest, repoURL, remoteURL string
-	auth                     transport.AuthMethod
-	progress                 io.Writer
+	dest, repoURL string
+	progress      io.Writer
 }
 
 func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
@@ -119,10 +109,9 @@ func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
 	if entries, err := os.ReadDir(s.dest); err == nil && len(entries) > 0 {
 		return nil, fmt.Errorf("glsa sync: %s is not empty and not a git clone; choose an empty or new directory", s.dest)
 	}
-	s.step("Cloning %s into %s...", redact(s.repoURL), s.dest)
+	s.step("Cloning %s into %s...", s.repoURL, s.dest)
 	repo, err := git.PlainCloneContext(ctx, s.dest, false, &git.CloneOptions{
-		URL:          s.remoteURL,
-		Auth:         s.auth,
+		URL:          s.repoURL,
 		Depth:        1,
 		SingleBranch: true,
 		Progress:     s.terminal(),
@@ -137,7 +126,7 @@ func (s syncer) clone(ctx context.Context) (*git.Repository, error) {
 // and resets instead of pulling, since a read-only mirror never needs a
 // merge. Pointing origin at the URL makes a changed --repo take effect.
 func (s syncer) update(ctx context.Context, repo *git.Repository) error {
-	if err := setOrigin(repo, s.remoteURL); err != nil {
+	if err := setOrigin(repo, s.repoURL); err != nil {
 		return s.fail("pointing origin at the repository in "+s.dest, err)
 	}
 	changes, err := countLocalChanges(repo)
@@ -148,11 +137,10 @@ func (s syncer) update(ctx context.Context, repo *git.Repository) error {
 		s.step("Discarding %d local change(s) in %s...", changes, s.dest)
 	}
 
-	s.step("Fetching updates from %s into %s...", redact(s.repoURL), s.dest)
+	s.step("Fetching updates from %s into %s...", s.repoURL, s.dest)
 	err = repo.FetchContext(ctx, &git.FetchOptions{
 		RemoteName: "origin",
-		RemoteURL:  s.remoteURL, // not origin's URL, which rewrite rules may change
-		Auth:       s.auth,
+		RemoteURL:  s.repoURL, // not origin's URL, which rewrite rules may change
 		RefSpecs:   []config.RefSpec{config.RefSpec("+HEAD:" + fetchedHead)},
 		Depth:      1,
 		Force:      true,
@@ -189,29 +177,9 @@ func (s syncer) summarize(repo *git.Repository, cloned bool, oldCommit string) (
 	return SyncResult{Dest: s.dest, Cloned: cloned, FileCount: len(files), OldCommit: oldCommit, NewCommit: newCommit}, nil
 }
 
-// urlCredentials matches the "user:password@" part of URLs in go-git's
-// messages, which repeat the URL as "user:REDACTED@host".
-var urlCredentials = regexp.MustCompile(`://[^/@\s"]+@`)
-
-// fail wraps err from a git step, removing any credentials in repoURL
-// from the message.
+// fail wraps err from a git step with what was being done.
 func (s syncer) fail(action string, err error) error {
-	message := err.Error()
-	if raw, safe := s.repoURL, redact(s.repoURL); raw != safe {
-		message = strings.ReplaceAll(message, raw, safe)
-		message = strings.ReplaceAll(message, quoted(raw), quoted(safe))
-		message = strings.ReplaceAll(message, credentials(raw), "")
-		message = strings.ReplaceAll(message, quoted(credentials(raw)), "")
-	}
-	message = urlCredentials.ReplaceAllString(message, "://")
-	return fmt.Errorf("glsa sync: %s from %s: %s", action, redact(s.repoURL), message)
-}
-
-// quoted is text as Go's %q writes it inside the quotes, the form
-// url.Parse errors use to repeat a URL.
-func quoted(text string) string {
-	q := strconv.Quote(text)
-	return q[1 : len(q)-1]
+	return fmt.Errorf("glsa sync: %s from %s: %w", action, s.repoURL, err)
 }
 
 func (s syncer) step(format string, args ...any) {
@@ -429,45 +397,4 @@ func headCommit(repo *git.Repository) (string, error) {
 		return "", fmt.Errorf("HEAD %s: %w", head.Hash(), err)
 	}
 	return head.Hash().String(), nil
-}
-
-// splitCredentials moves the "user:password@" part of an http(s) repoURL
-// into basic auth, so it is sent to the server but not written to
-// .git/config, where a cached or uploaded mirror would expose it. Other
-// URLs, like ssh's "git@host:path", are returned unchanged.
-func splitCredentials(repoURL string) (string, transport.AuthMethod) {
-	parsed, err := url.Parse(repoURL)
-	if err != nil || parsed.User == nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return repoURL, nil
-	}
-	password, _ := parsed.User.Password()
-	auth := &githttp.BasicAuth{Username: parsed.User.Username(), Password: password}
-	parsed.User = nil
-	return parsed.String(), auth
-}
-
-// redact removes a "user:password@" part from repoURL before it is shown.
-// It works on the raw string because url.Parse rejects some valid git
-// URLs, such as passwords containing "%" or "/" and "user@host:path".
-func redact(repoURL string) string {
-	return strings.Replace(repoURL, credentials(repoURL), "", 1)
-}
-
-// credentials returns the "user:password@" part of repoURL, or "".
-func credentials(repoURL string) string {
-	rest := repoURL
-	if _, afterScheme, ok := strings.Cut(repoURL, "://"); ok {
-		rest = afterScheme
-	}
-	// Only the part before the first "/" can hold credentials, except with
-	// a scheme, where the password itself may contain "/".
-	credentialsArea := rest
-	if !strings.Contains(repoURL, "://") {
-		credentialsArea, _, _ = strings.Cut(rest, "/")
-	}
-	at := strings.LastIndexByte(credentialsArea, '@')
-	if at < 0 {
-		return ""
-	}
-	return rest[:at+1]
 }
