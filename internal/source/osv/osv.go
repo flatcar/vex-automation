@@ -49,8 +49,8 @@ type Vulnerability struct {
 type Client struct {
 	BaseURL              string
 	VulnFetchConcurrency int
-	// Config tunes retries and batching; the zero value means osvdev.DefaultConfig().
-	Config osvdev.ClientConfig
+	// config replaces osvdev.DefaultConfig() when set; tests use it to skip retry waits.
+	config *osvdev.ClientConfig
 }
 
 // Query returns the vulnerabilities affecting each package. Packages
@@ -96,8 +96,8 @@ func (c *Client) api() *osvdev.OSVClient {
 	client := osvdev.DefaultClient()
 	// osvdev appends the endpoint path to the base URL as plain text.
 	client.BaseHostURL = strings.TrimSuffix(cmp.Or(c.BaseURL, DefaultBaseURL), "/")
-	if c.Config != (osvdev.ClientConfig{}) {
-		client.Config = c.Config
+	if c.config != nil {
+		client.Config = *c.config
 	}
 	return client
 }

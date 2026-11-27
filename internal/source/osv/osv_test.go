@@ -22,15 +22,15 @@ func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &Client{BaseURL: srv.URL, Config: noRetryWait()}
+	return &Client{BaseURL: srv.URL, config: noRetryWait()}
 }
 
 // noRetryWait is osvdev's default config without the waits between retries.
-func noRetryWait() osvdev.ClientConfig {
+func noRetryWait() *osvdev.ClientConfig {
 	config := osvdev.DefaultConfig()
 	config.BackoffDurationMultiplier = 0
 	config.JitterMultiplier = 0
-	return config
+	return &config
 }
 
 // The requests and answers of the OSV.dev API, as the test server sees them.
